@@ -1,5 +1,7 @@
 ---
 name: PR Review Command
+# 本仓允许版本标签（@v7）：策略见 .lintrc/security/.semgrep.yml 的 gha-action-ref-not-tag-or-sha；
+# 官方规则 github-actions-mutable-action-tag 因此在每处 uses 行尾逐处声明 nosemgrep。
 
 permissions:
   contents: read
@@ -17,13 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
         with:
           ref: refs/pull/${{ github.event.issue.number }}/head
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v6 # nosemgrep: github-actions-mutable-action-tag
         with:
           node-version: "24"
 

@@ -104,7 +104,7 @@ docker compose exec nginx nginx -s reload   # 改完配置后热加载
 ```nginx
 proxy_intercept_errors on;        # 让上游返回的 4xx/5xx 也走错误页
 error_page 400 403 404 405 408 409 410 411 412 413 416 418 429
-           500 502 503 504 505 /error/hacker-terminal/$status.html;
+        500 502 503 504 505 /error/hacker-terminal/$status.html;
 ```
 
 落盘 location 只有三行，`internal` 保证外部无法把错误页当静态资源刷：

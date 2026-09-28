@@ -64,7 +64,7 @@ context.
 │   ├── PULL_REQUEST_TEMPLATE.md          # PR template (bilingual; every section required)
 │   ├── docs/                             # project documentation
 │   │   └── ci/                           # CI documentation
-│   │       └── ci-checks.md              # CI check reference (Chinese, with equivalent commands)
+│   │       └── ci-checks.md              # CI check reference (Chinese)
 │   ├── ISSUE_TEMPLATE/                   # issue templates (bilingual)
 │   │   ├── bug_report_en.md
 │   │   ├── bug_report_zh.md
@@ -145,8 +145,8 @@ context.
 - **All validation runs in CI; do not build a local verification path.** Syntax, security, docs,
   naming, spelling, secret and SAST checks all run through `.github/workflows/lint.yml` on GitHub
   Actions, and the single required status check is the `All Lint Checks Passed` aggregate gate.
-  Do not add local verification scripts, npm scripts, Makefiles or test suites; to reproduce a step,
-  use the equivalent command recorded in `.github/docs/ci/ci-checks.md`.
+  Do not add local verification scripts, npm scripts, Makefiles or test suites; CI is the only
+  validation path, and no local reproduction steps are documented.
 - **Config paths are absolute on purpose.** `nginx.conf` includes `/etc/nginx/mime.types` and
   `/etc/nginx/conf.d/*.conf`, mirroring a container or package installation. Keep that convention.
 - **`nginx -t` cannot run against the working tree directly.** The absolute includes do not exist
