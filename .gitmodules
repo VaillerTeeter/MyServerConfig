@@ -1,4 +1,4 @@
 [submodule "conf.d/error"]
-	path = conf.d/error
-	url = https://github.com/tarampampam/error-pages.git
-	branch = gh-pages
+  path = conf.d/error
+  url = https://github.com/tarampampam/error-pages.git
+  branch = gh-pages

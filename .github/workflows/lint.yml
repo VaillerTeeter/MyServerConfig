@@ -6,6 +6,8 @@
 #           密钥与 SAST、文件命名、空白与行尾规范、外链可用性、Issue 模板 schema。
 # 约定：`.lintrc/**` 既是各 job 引用的配置来源，也与其他文件一样接受通用规范检查
 #       （命名、空白与行尾、拼写、YAML 规范、密钥与 SAST）。
+# 纪律：所有检查「命中即失败」，不允许把问题降级成「只提示」；各工具对 warning 的退出码
+#       语义不一致，因此由 strictness-guard job 在配置层兜底（禁止降级与放行写法）。
 
 name: Lint
 
@@ -23,6 +25,13 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+# 全局 shell。GitHub 的默认 shell 是 `bash -e {0}`：管道里前一个命令失败不会让这一步失败
+# （`cmd | tee`、`curl | tar` 都会吞掉错误）。显式声明 bash 后 runner 会改用
+# `bash --noprofile --norc -eo pipefail {0}`，把管道中的失败一并暴露出来。
+defaults:
+  run:
+    shell: bash
 
 jobs:
   # ============================================================
@@ -68,20 +77,16 @@ jobs:
           printf '%s\n' "${FILES[@]}" > /tmp/yaml-files.txt
           echo "count=${#FILES[@]}" >> "$GITHUB_OUTPUT"
 
-      - name: Run yamllint
-        if: steps.collect.outputs.count != '0'
-        run: |
-          xargs yamllint \
-            --config-file .lintrc/general/.yamllint.yml \
-            --format github \
-            < /tmp/yaml-files.txt
-
+      # --strict：把 warning 也升级为失败（yamllint 默认只对 error 返回非 0）。
+      # --format github：同一趟输出 ::error::/::warning:: 注解，问题直接出现在 PR 界面。
+      # 两趟合并成一趟，避免「宽松一趟 + 严格一趟」的双倍耗时与两套输出。
       - name: Run yamllint (strict)
         if: steps.collect.outputs.count != '0'
         run: |
           xargs yamllint \
             --config-file .lintrc/general/.yamllint.yml \
             --strict \
+            --format github \
             < /tmp/yaml-files.txt
 
   cspell-lint:
@@ -136,11 +141,12 @@ jobs:
 
       - name: Install editorconfig-checker
         run: |
+          # ec 3.x 的发行包把二进制放在 bin/ 下（官方 README Quickstart 即 ./bin/ec-$OS-$ARCH）
           EC_VER="3.0.3"
           curl -fsSL \
             "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v${EC_VER}/ec-linux-amd64.tar.gz" \
             | tar xz -C /tmp
-          sudo install -m 0755 /tmp/ec-linux-amd64 /usr/local/bin/ec
+          sudo install -m 0755 /tmp/bin/ec-linux-amd64 /usr/local/bin/ec
 
       - name: Run editorconfig-checker
         run: |
@@ -162,8 +168,13 @@ jobs:
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           sudo install -m 0755 ./actionlint /usr/local/bin/actionlint
 
+      # 用官方给的注解模板把每条问题输出成 ::error 注解，直接标在 PR 的 Files changed 上；
+      # 否则问题只躺在日志里，很容易被忽略。actionlint 没有 warning 档，任何问题都返回 1。
+      # 模板放 env 里是为了避免 YAML 单行过长（yamllint 的 line-length 上限 200）。
       - name: Run actionlint
-        run: actionlint -color
+        env:
+          ACTIONLINT_FORMAT: '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Message}}%0A```%0A{{replace $err.Snippet "\\n" "%0A"}}%0A```{{end}}'
+        run: actionlint -color -format "${ACTIONLINT_FORMAT}"
 
   issue-config-lint:
     name: Issue Chooser Config (JSON Schema)
@@ -286,6 +297,12 @@ jobs:
       - name: Install Semgrep
         run: pip install semgrep
 
+      # --error：只要有命中就 exit 1（semgrep 的 error_on_findings 语义：结果非空即返回 1）。
+      # 不要传 `--severity`：它筛的是「规则」而不是「命中」，语义是
+      #   "Report findings only from rules matching the supplied severity"（精确匹配）；
+      #   本仓规则一律 ERROR，传 INFO 会加载 0 条规则 —— 日志里只剩一句
+      #   "Nothing to scan."、退出码 0，扫描被静默关掉而 job 反而变绿。
+      # 也不要传 `--strict`：它把 semgrep 自身的 WARN 级问题升级为失败，与规则严格度无关。
       - name: Run Semgrep
         run: |
           semgrep scan \
@@ -295,7 +312,18 @@ jobs:
             --exclude .git/ \
             --exclude conf.d/error/ \
             --exclude logs/ \
-            .
+            . 2>&1 | tee /tmp/semgrep.log
+          # 空扫描守卫：规则被筛空时 semgrep 只打印 "Nothing to scan." 并以 0 退出（假绿），
+          # 所以这里断言它确实加载了规则、也确实扫到了文件。
+          if grep -q 'Nothing to scan' /tmp/semgrep.log; then
+            echo "::error::semgrep loaded no rules (Nothing to scan) - scan was vacuous"
+            exit 1
+          fi
+          if ! grep -qE 'with [1-9][0-9]* Code rules' /tmp/semgrep.log; then
+            echo "::error::semgrep reported no loaded rules - scan was vacuous"
+            exit 1
+          fi
+          echo "semgrep loaded rules and completed the scan"
 
   # ============================================================
   # nginx 配置
@@ -307,8 +335,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # nginx.conf 里用的是绝对路径（/etc/nginx/...），且证书是 0 字节占位文件，
-      # 因此先把配置复制到临时目录、生成一次性自签证书，再用官方镜像做语法校验。
+      # nginx.conf 里的 include 与证书都是绝对路径（/etc/nginx/...），挂载位置必须与镜像内一致；
+      # 因此先把配置复制到临时目录、用一次性自签证书覆盖仓库里的示例证书，再挂进官方镜像校验。
       - name: Prepare nginx test tree
         run: |
           rm -rf /tmp/nginx-test
@@ -326,15 +354,129 @@ jobs:
           docker run --rm \
             -v /tmp/nginx-test/nginx.conf:/etc/nginx/nginx.conf:ro \
             -v /tmp/nginx-test/conf.d:/etc/nginx/conf.d:ro \
-            nginx:alpine nginx -t
+            nginx:alpine nginx -t 2>&1 | tee /tmp/nginx-t.log
+          # nginx -t 的 [warn]（例如冲突的 server_name、被忽略的指令）不影响退出码，
+          # 在 CI 里会完全看不见；这里把 warn 及以上整体升级为失败。
+          # 管道 + tee 的失败检测依赖上面的 `shell: bash`（-o pipefail），
+          # 否则 docker 自己失败时会被 tee 的 0 掩盖。
+          #
+          # 白名单只有一条：仓库内是自签示例证书、没有 OCSP responder URL，nginx 必然
+          # 对 ssl_stapling 打 [warn] 并忽略它（换真实证书后自动消失）。被豁免的这一条
+          # 仍以 notice 打印出来；白名单之外的任何 warn/error/crit/alert/emerg 一律失败。
+          if grep -qE '\[warn\].*ssl_stapling.*ignored' /tmp/nginx-t.log; then
+            echo "::notice::白名单：自签示例证书无 OCSP responder URL，nginx 忽略 ssl_stapling（换真实证书即消失）"
+          fi
+          unexpected="$(grep -E '\[(warn|error|crit|alert|emerg)\]' /tmp/nginx-t.log \
+            | grep -vE '\[warn\].*ssl_stapling.*ignored' || true)"
+          if [ -n "${unexpected}" ]; then
+            echo "${unexpected}"
+            echo "::error::nginx -t reported warn/error/crit/alert/emerg (outside the documented whitelist)"
+            exit 1
+          fi
 
+      # gixy 的位置参数只能是「文件」——它对每个参数直接 open(path,'rb')，传目录会抛错并让
+      # 整个进程以非 0 退出（审计结果也一起丢），所以目录必须写成 shell glob（由 bash 展开）。
+      # 另外 gixy 只在「恰好 1 个位置参数」时才校验文件是否存在：多参数时缺文件只打一行
+      # 日志然后继续、退出码仍是 0。因此这里先自己断言每个 glob 至少命中一个文件，
+      # 否则将来改名或改布局会让覆盖范围静默缩小，而 CI 依旧全绿。
+      - name: Check gixy targets
+        run: |
+          for f in nginx.conf conf.d/sites.conf; do
+            test -f "${f}" || { echo "::error::missing ${f}"; exit 1; }
+          done
+          # 未加引号才会被 bash 展开；glob 匹配不到任何文件时会原样保留字面量，
+          # 此时 test -e 为假，正好把「覆盖范围缩水」暴露成失败。
+          for g in conf.d/*.conf conf.d/sites/*.conf conf.d/snippets/*.conf; do
+            test -e "${g}" || { echo "::error::no match for ${g}"; exit 1; }
+          done
+
+      # --disable-includes：本仓库的 include 全是 /etc/nginx/... 绝对路径，而仓库在容器里挂在
+      # /repo，include 链永远解析不到，gixy 只会打 4 行 "File not found" 告警（不影响退出码），
+      # 实际就是「逐文件独立审计」。用该开关把这件事写成显式意图，而不是让告警被当噪声忽略；
+      # 若将来改成把仓库挂到 /etc/nginx 让 include 真正生效，请删掉这个开关。
+      # 不要加 -l/--level：gixy 默认 level 0 就是最低档（全部上报），-l 会把低危过滤掉，那是放宽。
       - name: Security analysis (gixy)
         run: |
           docker run --rm \
             -v "$PWD:/repo" -w /repo \
             yandex/gixy \
             -c .lintrc/infrastructure/nginx/gixy.conf \
-            nginx.conf conf.d/sites.conf conf.d/sites/
+            --disable-includes \
+            nginx.conf conf.d/*.conf conf.d/sites/*.conf conf.d/snippets/*.conf
+
+  # ============================================================
+  # 严格性守卫（警告即失败）
+  # ============================================================
+  strictness-guard:
+    name: Strictness Guard (no warning downgrades)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # 纪律：本仓库所有检查都必须「命中即失败」。各工具对低档问题（warning）的退出码语义
+      # 并不一致 —— yamllint 默认只对 error 返回非 0、semgrep 靠 --error、markdownlint 有
+      # severity 字段、commitlint 用 1 表示 warning、ls-lint 甚至有开关能把退出码压成 0。
+      # 因此这里不逐个依赖工具语义，而是在配置层把「降级」与「放行」的写法本身堵死。
+      #
+      # 自匹配处理：模式里的关键字符串用 '' 拼接（例如把开关名拆成两段 '--wa''rn' 写），
+      # 这样守卫脚本自己的文本不会被自己的 grep 命中，也不会被拼写检查当成生造的单词；
+      # grep 用 -i，把大小写变体（WARNING/warning）一并命中。
+      - name: Reject warning-level config and fail-open flags
+        run: |
+          patterns=(
+            '"severity"[[:space:]]*:[[:space:]]*"(warning|info)'
+            '^[[:space:]]*severity:[[:space:]]*(warning|info)'
+            '^[[:space:]]*level:[[:space:]]*warning'
+            '\[[[:space:]]*1[[:space:]]*,'
+            '--wa''rn'
+            '--no-''error'
+            '--exit-''code[[:space:]=]*0'
+            '--sever[it]y([[:space:]=]|$)'
+            '-''ignore[[:space:]]'
+            'continue-''on-''error'
+            '\|\|[[:space:]]*true'
+          )
+          failed=0
+          for pattern in "${patterns[@]}"; do
+            if grep -rInEi -e "${pattern}" .lintrc/ .github/workflows/; then
+              echo "::error::forbidden warning/fail-open pattern: ${pattern}"
+              failed=1
+            fi
+          done
+          if [ "${failed}" -ne 0 ]; then
+            echo "::error::strictness guard failed: warnings must fail the build"
+            exit 1
+          fi
+          echo "strictness guard: no warning downgrade or fail-open flag found"
+
+  # ============================================================
+  # 代码格式（Prettier）
+  # ============================================================
+  prettier-check:
+    name: Prettier (JS Formatting)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "lts/*"
+
+      - name: Install prettier
+        run: npm install --no-save prettier@3.9.9
+
+      # .lintrc/frontend/prettier/.prettierrc 此前只被 VS Code 引用，没有任何 CI job
+      # （违反仓库「一个配置一个 job」的约定）。范围先只覆盖 JS（.mjs/.cjs）：
+      # Markdown 的 proseWrap=always 与 JSON/YAML 的 printWidth 差异会让一次性格式化影响面过大，
+      # 等这一步稳定后再单独扩大范围。配置路径显式传入，不依赖 prettier 的自动发现。
+      - name: Check formatting
+        run: |
+          npx prettier \
+            --config .lintrc/frontend/prettier/.prettierrc \
+            --check "**/*.mjs" "**/*.cjs"
 
   # ============================================================
   # 汇总门（供分支保护作为唯一必需状态检查）
@@ -356,17 +498,44 @@ jobs:
       - secret-scan
       - sast-scan
       - nginx-lint
+      - strictness-guard
+      - prettier-check
     steps:
+      # 白名单式判定：只有 commitlint-lint 在非 pull_request 事件下允许 skipped
+      # （它带 `if: github.event_name == 'pull_request'`）。其余任何 failure / cancelled /
+      # skipped 都算失败 —— 旧写法把 skipped 一律视为通过，job 被误跳过时门依旧全绿。
       - name: Verify all required jobs succeeded
         run: |
-          results="${{ join(needs.*.result, ' ') }}"
-          echo "results: ${results}"
-          for result in ${results}; do
-            case "${result}" in
-              success|skipped) ;;
-              *)
-                echo "::error::Required lint job did not succeed: ${result}"
-                exit 1
-                ;;
-            esac
+          failed=0
+          for pair in \
+            "markdown-lint:${{ needs.markdown-lint.result }}" \
+            "yaml-lint:${{ needs.yaml-lint.result }}" \
+            "cspell-lint:${{ needs.cspell-lint.result }}" \
+            "ls-lint:${{ needs.ls-lint.result }}" \
+            "editorconfig-lint:${{ needs.editorconfig-lint.result }}" \
+            "github-actions-lint:${{ needs.github-actions-lint.result }}" \
+            "issue-config-lint:${{ needs.issue-config-lint.result }}" \
+            "broken-link-lint:${{ needs.broken-link-lint.result }}" \
+            "commitlint-lint:${{ needs.commitlint-lint.result }}" \
+            "secret-scan:${{ needs.secret-scan.result }}" \
+            "sast-scan:${{ needs.sast-scan.result }}" \
+            "nginx-lint:${{ needs.nginx-lint.result }}" \
+            "strictness-guard:${{ needs.strictness-guard.result }}" \
+            "prettier-check:${{ needs.prettier-check.result }}"
+          do
+            name="${pair%%:*}"
+            result="${pair##*:}"
+            echo "${name}: ${result}"
+            if [ "${result}" = "success" ]; then
+              continue
+            fi
+            if [ "${name}" = "commitlint-lint" ] \
+              && [ "${result}" = "skipped" ] \
+              && [ "${{ github.event_name }}" != "pull_request" ]; then
+              echo "${name}: skipped on non-PR event, allowed"
+              continue
+            fi
+            echo "::error::${name} did not succeed: ${result}"
+            failed=1
           done
+          exit "${failed}"
