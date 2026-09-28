@@ -44,7 +44,7 @@ gh              # read-only: pr view, pr list, issue view, issue list, api (GET 
 ### Key Rules
 
 - NEVER use `git add` — the user stages files manually. If staging area is empty, prompt the user to `git add` first.
-- NEVER force push. NEVER push to `master`.
+- NEVER force push. NEVER push to `MyNginx`.
 - All other `git` write subcommands are FORBIDDEN (merge, rebase, reset, fetch, checkout, etc.).
 
 ## Git Allowed Operations
@@ -88,7 +88,7 @@ ALL other `git` subcommands are ABSOLUTELY FORBIDDEN, especially:
 - `git clean`
 - `git am` / `git apply`
 
-NEVER use `git push --force`. NEVER push to `master`.
+NEVER use `git push --force`. NEVER push to `MyNginx`.
 
 ## gh CLI — Strictly Read-Only
 
@@ -125,7 +125,7 @@ NEVER use `curl https://api.github.com/...` — use `gh api` (GET only) if MCP i
 
 ## Git Operation Rules
 
-NEVER commit or push directly to `master`.
+NEVER commit or push directly to `MyNginx`.
 
 Always create a feature branch (via MCP `create_branch`) before any commit:
 

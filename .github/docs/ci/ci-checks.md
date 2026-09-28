@@ -1,8 +1,8 @@
 # CI 检查说明
 
-所有 Pull Request 合并到 `master` 前，必须通过下列自动检查；工作流定义在 [.github/workflows/lint.yml](../../../.github/workflows/lint.yml)。
+所有 Pull Request 合并到 `MyNginx` 前，必须通过下列自动检查；工作流定义在 [.github/workflows/lint.yml](../../../.github/workflows/lint.yml)。
 
-- **触发时机**：PR 目标分支为 `master`；直接 push 到 `master`
+- **触发时机**：PR 目标分支为 `MyNginx`；直接 push 到 `MyNginx`
 - **唯一必需检查**：`All Lint Checks Passed` 汇总门（见文末）
 - **配置集中管理**：所有检查配置都在 [.lintrc/](../../../.lintrc) 下，一个配置对应一个 job
 - **`.lintrc` 的定位**：既是各 job 引用的配置来源，也与其他文件一样接受通用规范与安全检查（命名、空白与行尾、拼写、YAML、密钥、SAST）
@@ -27,8 +27,8 @@
 
 ## 触发时机
 
-- **PR 创建或更新**：目标分支为 `master` 时自动触发
-- **直接 push 到 master**：管理员操作时同样触发
+- **PR 创建或更新**：目标分支为 `MyNginx` 时自动触发
+- **直接 push 到 MyNginx**：管理员操作时同样触发
 - **并发控制**：同一 PR 或分支的新提交会取消上一次仍在运行的检查
 
 ## Markdown Lint

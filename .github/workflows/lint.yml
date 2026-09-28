@@ -15,10 +15,10 @@ permissions:
 on:
   pull_request:
     branches:
-      - master
+      - MyNginx
   push:
     branches:
-      - master
+      - MyNginx
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.number || github.ref }}

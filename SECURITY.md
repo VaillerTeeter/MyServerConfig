@@ -4,7 +4,7 @@
 
 | 版本 | 支持状态 |
 | --- | --- |
-| latest (master) | ✅ |
+| latest (MyNginx) | ✅ |
 
 ## 报告漏洞
 

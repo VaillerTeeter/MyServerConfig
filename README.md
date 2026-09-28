@@ -2,6 +2,8 @@
 
 生产级 Nginx 配置参考仓库。本地服务（媒体库、网盘、博客等）经 frp 内网穿透到服务器后，由服务器的 nginx 统一终结 TLS、反向代理并对外提供 HTTPS 访问。
 
+本仓库按分支组织；本分支（`MyNginx`）只包含 Nginx 配置。
+
 仓库的交付物是**配置与文档**：没有应用代码、没有包管理器、没有构建步骤。每条指令前的中文注释都是交付内容的一部分——它写清了作用域、默认值，以及取这个值的理由。
 
 ## 它解决什么问题
@@ -30,8 +32,8 @@
 ### 2. 获取配置
 
 ```bash
-git clone https://github.com/VaillerTeeter/MyNginx.git
-cd MyNginx
+git clone -b MyNginx https://github.com/VaillerTeeter/MyServerConfig.git
+cd MyServerConfig
 git submodule update --init --recursive
 ```
 

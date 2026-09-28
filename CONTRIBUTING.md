@@ -7,7 +7,7 @@
 ## 开始之前
 
 - 请先阅读 [行为准则](./CODE_OF_CONDUCT.md)
-- 查看现有的 [Issues](https://github.com/VaillerTeeter/MyNginx/issues) 和 [Pull Requests](https://github.com/VaillerTeeter/MyNginx/pulls) 以避免重复工作
+- 查看现有的 [Issues](https://github.com/VaillerTeeter/MyServerConfig/issues) 和 [Pull Requests](https://github.com/VaillerTeeter/MyServerConfig/pulls) 以避免重复工作
 
 ---
 
@@ -15,8 +15,8 @@
 
 ```bash
 # 1. Fork 本仓库到你的账号，然后克隆
-git clone https://github.com/<your-username>/MyNginx.git
-cd MyNginx
+git clone https://github.com/<your-username>/MyServerConfig.git
+cd MyServerConfig
 
 # 2. 拉取错误页子模块（conf.d/error，本地预览错误页时需要）
 git submodule update --init --recursive
@@ -26,12 +26,12 @@ git submodule update --init --recursive
 
 ## 提交流程
 
-本仓库所有变更必须通过 Pull Request 合并，**禁止直接 push 到 `master`**。
+本仓库所有变更必须通过 Pull Request 合并，**禁止直接 push 到 `MyNginx`**。
 
 ```bash
-# 1. 基于 master 创建功能分支
-git checkout master
-git pull origin master
+# 1. 基于 MyNginx 创建功能分支
+git checkout MyNginx
+git pull origin MyNginx
 git checkout -b feat/your-feature-name
 
 # 2. 完成修改，提交
@@ -45,7 +45,7 @@ git push origin feat/your-feature-name
 # 参考 .clinerules/git-workflow.md 中的 PR Workflow 规范
 # a. 将 PR body 写入 tmp/pr-<number>-body.md（按 .github/PULL_REQUEST_TEMPLATE.md 填写）
 # b. 确认内容后执行：
-gh pr create --title "标题" --body-file tmp/pr-<number>-body.md --base master
+gh pr create --title "标题" --body-file tmp/pr-<number>-body.md --base MyNginx
 ```
 
 ---
@@ -79,4 +79,4 @@ gh pr create --title "标题" --body-file tmp/pr-<number>-body.md --base master
 
 ## 问题和讨论
 
-如有疑问，欢迎通过 [Issue](https://github.com/VaillerTeeter/MyNginx/issues/new/choose) 或 [邮件](mailto:wyc_19533480830@outlook.com) 联系。
+如有疑问，欢迎通过 [Issue](https://github.com/VaillerTeeter/MyServerConfig/issues/new/choose) 或 [邮件](mailto:wyc_19533480830@outlook.com) 联系。

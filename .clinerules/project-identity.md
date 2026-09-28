@@ -8,8 +8,8 @@ alwaysApply: true
 
 ## Project Name & Purpose
 
-MyNginx (`VaillerTeeter/MyNginx`) is a **production-grade Nginx configuration reference
-repository**. Its deliverable is configuration and documentation: there is no application source
+MyNginx (`VaillerTeeter/MyServerConfig`, branch `MyNginx`) is a **production-grade Nginx
+configuration reference repository**. Its deliverable is configuration and documentation: there is no application source
 code, no package manager, no build step, and no runtime service owned by this repository.
 
 ## Nature
@@ -170,5 +170,5 @@ context.
   `.lintrc/general/.ls-lint.yml`).
 - **Language conventions.** Repository documentation is Chinese-first, git commit messages and this
   rule file are English, and the PR template is bilingual.
-- **All changes go through feature branches.** Never commit or push to `master`. See
+- **All changes go through feature branches.** Never commit or push to `MyNginx`. See
   `.clinerules/git-workflow.md` for the complete git workflow rules.
