@@ -36,6 +36,7 @@
   ],
   "ignorePaths": [
     ".git/**",
+    "conf.d/cert/**",
     "conf.d/error/**",
     "logs/**"
   ],

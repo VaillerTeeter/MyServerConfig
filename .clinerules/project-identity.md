@@ -15,12 +15,12 @@ code, no package manager, no build step, and no runtime service owned by this re
 ## Nature
 
 This is a **single-technology repository** — hand-written Nginx configuration plus the docs and lint
-tooling that keep it correct. Two files carry the substance of the project:
+tooling that keep it correct. The substance of the project lives in these files:
 
 | File | Size | Scope |
 | --- | --- | --- |
-| `nginx.conf` | ~594 lines | main / events / http contexts: worker tuning, buffers, timeouts, hash tables, logging, limit-req and limit-conn, gzip, proxy defaults, global TLS, then `include /etc/nginx/conf.d/*.conf` |
-| `conf.d/example.conf` | ~1023 lines | `upstream` keepalive pool, HTTP to HTTPS redirect, HTTPS server, static and media serving, large uploads, rate limits, an `/nginx_status` monitoring panel, and external reverse-proxy examples |
+| `nginx.conf` | ~695 lines | main / events / http contexts: worker tuning, buffers, timeouts, hash tables, logging, limit-req and limit-conn, gzip, proxy defaults, global TLS, then `include /etc/nginx/conf.d/*.conf` |
+| `conf.d/sites/*.conf` | one file per site | `upstream` keepalive pool, HTTP to HTTPS redirect, HTTPS server, error pages, and the cache / upload / streaming differences; loaded only when listed in `conf.d/sites.conf` |
 
 Every directive is preceded by an explanatory Chinese comment block that states its type, scope,
 default value and the reasoning (performance or security trade-off) behind the chosen value.
@@ -31,11 +31,14 @@ default value and the reasoning (performance or security trade-off) behind the c
 The repository is meant to be reusable as an example, so every environment-specific value is
 deliberately fake. Keep it that way:
 
-- Domain name: `example.example.example`
-- Upstream address and port: `127.0.0.1:xxxx`
-- TLS material: 0-byte placeholder files under `conf.d/cert/example/`
+- Domain name: `example.example.example` (subdomains reuse the same placeholder, e.g.
+  `blog.example.example.example`)
+- Upstream address and port: loopback with a numeric placeholder port, e.g. `127.0.0.1:9001`
+  (a non-numeric port such as `xxxx` fails `nginx -t`)
+- TLS material: a self-signed example chain under `conf.d/cert/example/`, committed on purpose
 
-Never commit a real hostname, IP address, port, credential or private key into this repository.
+Never commit a real hostname, IP address, port or credential into this repository. The single
+exception is the self-signed example material under `conf.d/cert/example/`.
 
 ## Third-party Submodule
 
@@ -54,7 +57,7 @@ context.
 │   ├── git-workflow.md                   # Cline git workflow rules (English)
 │   └── project-identity.md               # this file
 ├── .editorconfig                         # charset / EOL / indent: 4 spaces for .conf, 2 elsewhere
-├── .gitignore                            # ignores log files and TLS material
+├── .gitignore                            # ignores logs and TLS material (except conf.d/cert/example)
 ├── .gitmodules                           # declares the conf.d/error submodule
 ├── .github/                              # GitHub community files and CI metadata
 │   ├── dependabot.yml                    # weekly GitHub Actions dependency updates
@@ -99,8 +102,8 @@ context.
 │   ├── extensions.json                   # recommended extensions
 │   └── settings.json                     # workspace settings, pointing at the .lintrc configs
 ├── conf.d/                               # virtual host configuration snippets
-│   ├── cert/                             # TLS material placeholders
-│   │   └── example/                      # 0-byte placeholders; real keys never enter the repo
+│   ├── cert/                             # TLS material; git-ignored except example/
+│   │   └── example/                      # self-signed example chain (committed on purpose)
 │   │       ├── example.example.example.csr
 │   │       ├── example.example.example.key
 │   │       ├── example.example.example_bundle.crt
@@ -119,7 +122,14 @@ context.
 │   │   ├── orient/
 │   │   ├── shuffle/
 │   │   └── win98/                        # each of the 11 themes holds 20 status code pages (400-505)
-│   └── example.conf                      # virtual host example
+│   ├── sites.conf                        # enable switchboard: only listed sites are loaded
+│   └── sites/                            # one file per site (not auto-included)
+│       ├── default-server.conf           # fallback: unknown host 404 / TLS reject
+│       ├── blog.conf                     # blog
+│       ├── startpage.conf                # site directory / start page
+│       ├── netdisk.conf                  # net disk
+│       ├── gallery.conf                  # photo gallery
+│       └── stream.conf                   # video streaming
 ├── logs/                                 # runtime log directory; only .gitkeep is tracked
 │   └── .gitkeep                          # placeholder that keeps the directory in git
 ├── CODE_OF_CONDUCT.md                    # code of conduct
@@ -140,11 +150,15 @@ context.
 - **Config paths are absolute on purpose.** `nginx.conf` includes `/etc/nginx/mime.types` and
   `/etc/nginx/conf.d/*.conf`, mirroring a container or package installation. Keep that convention.
 - **`nginx -t` cannot run against the working tree directly.** The absolute includes do not exist
-  locally and `conf.d/cert/example/*` are 0-byte placeholders. CI copies the configuration to a temp
-  directory, generates a throwaway self-signed certificate and runs `nginx -t` inside the
-  `nginx:alpine` image; see the Nginx section of `ci-checks.md` for the exact commands.
-- **Credentials never enter the repository.** `*.key`, `*.pem`, `*.crt` and `*.csr` are git-ignored;
-  only 0-byte placeholders may be committed.
+  locally and the bundled TLS material is only a self-signed example. CI copies the configuration to
+  a temp directory, overwrites `conf.d/cert/example/example.example.example*` with a throwaway
+  self-signed certificate and runs `nginx -t` inside the `nginx:alpine` image; see the Nginx section
+  of `ci-checks.md` for the exact commands.
+- **Credentials never enter the repository — with one deliberate exception.** `*.key`, `*.pem`,
+  `*.crt` and `*.csr` are git-ignored everywhere, except the path-allowlisted example directory
+  `conf.d/cert/example/`, which ships a self-signed sample so a fresh clone can start. Real
+  certificates belong in another `conf.d/cert/<domain>/` directory and stay ignored; never place real
+  material in the example directory, it is allowlisted in `.gitleaks.toml`.
 - **One lint config, one CI job.** Every config under `.lintrc/<family>/` must have a matching job in
   `lint.yml` and an entry in the `all-checks` `needs` list. Adding a check means four things: the
   config file, the job, the `needs` entry, and a new section in `ci-checks.md`.
