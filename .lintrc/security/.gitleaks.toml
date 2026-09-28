@@ -26,6 +26,8 @@ paths = [
   '''(go\.sum|package-lock\.json|yarn\.lock|Cargo\.lock|composer\.lock)''',
   '''.env\.example''',
   '''.env\.sample''',
+  # 仓库内唯一的示例证书目录（自签材料、公开无价值）；真实证书不得放入此处
+  '''conf\.d/cert/example/.*''',
 ]
 regexes = [
   # AWS example credentials from documentation
