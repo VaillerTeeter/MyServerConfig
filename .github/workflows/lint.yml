@@ -334,7 +334,7 @@ jobs:
             -v "$PWD:/repo" -w /repo \
             yandex/gixy \
             -c .lintrc/infrastructure/nginx/gixy.conf \
-            nginx.conf conf.d/example.conf
+            nginx.conf conf.d/sites.conf conf.d/sites/
 
   # ============================================================
   # 汇总门（供分支保护作为唯一必需状态检查）

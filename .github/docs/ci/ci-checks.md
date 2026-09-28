@@ -231,13 +231,13 @@ semgrep scan --config .lintrc/security/.semgrep.yml --config p/github-actions \
 
 | 层次 | 工具 | 说明 |
 | --- | --- | --- |
-| 语法 | `nginx -t` | 在 `nginx:alpine` 镜像内执行；配置先复制到临时目录，并把 0 字节占位证书替换为一次性自签证书 |
+| 语法 | `nginx -t` | 在 `nginx:alpine` 镜像内执行；配置先复制到临时目录，并用一次性自签证书覆盖仓库内的示例证书 |
 | 安全 | gixy | 使用 `yandex/gixy` 镜像，用 `-c` 指定配置文件；开启全部插件并扩大 `add_header` 覆盖检测范围 |
 
-直接在本机执行 `nginx -t` 会失败，原因有两点：
+直接在本机执行 `nginx -t` 会失败：
 
 - `nginx.conf` 使用绝对路径（`/etc/nginx/mime.types`、`/etc/nginx/conf.d/*.conf`），必须挂载到镜像内的相同位置；
-- `conf.d/cert/example/*` 是 0 字节占位文件，真实 `nginx -t` 无法加载空证书。
+- 仓库内的 `conf.d/cert/example/*` 只是示例自签证书，CI 会先用一次性证书覆盖它，避免把示例材料当成真实凭据。
 
 本地复现（等价于 CI 的两步）：
 
@@ -251,7 +251,7 @@ docker run --rm \
   -v /tmp/nginx-test/conf.d:/etc/nginx/conf.d:ro \
   nginx:alpine nginx -t
 docker run --rm -v "$PWD:/repo" -w /repo yandex/gixy \
-  -c .lintrc/infrastructure/nginx/gixy.conf nginx.conf conf.d/example.conf
+  -c .lintrc/infrastructure/nginx/gixy.conf nginx.conf conf.d/sites.conf conf.d/sites/
 ```
 
 ## 汇总门
