@@ -1,0 +1,13 @@
+# ===== 第三方子模块（error-pages 生成的 221 个 HTML，约 14 MB）=====
+conf.d/error/
+
+# ===== 证书与私钥 =====
+conf.d/cert/
+*.key
+*.pem
+*.crt
+*.csr
+
+# ===== 日志文件 =====
+*.log
+logs/

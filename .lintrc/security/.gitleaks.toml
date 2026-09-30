@@ -1,0 +1,50 @@
+title = "gitleaks config"
+
+[extend]
+# Use the default gitleaks ruleset as base
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API Key Pattern"
+regex = '''(?i)(api[_-]?key|apikey|api[_-]?token)\s*[:=]\s*['"]?[0-9a-zA-Z\-_.]{20,}'''
+tags = ["api-key", "generic"]
+severity = "HIGH"
+
+[[rules]]
+id = "generic-secret"
+description = "Generic Secret Pattern"
+regex = '''(?i)(secret|passwd|password)\s*[:=]\s*['"][^'"]{8,}['"]'''
+tags = ["secret", "generic"]
+severity = "HIGH"
+
+[allowlist]
+description = "Global allowlist"
+paths = [
+  '''.gitleaks\.toml''',
+  '''(.*?)\.(jpg|gif|docx?|pdf|bin|svg|socket)$''',
+  '''(go\.sum|package-lock\.json|yarn\.lock|Cargo\.lock|composer\.lock)''',
+  '''.env\.example''',
+  '''.env\.sample''',
+  # 仓库内唯一的示例证书目录（自签材料、公开无价值）；真实证书不得放入此处
+  '''conf\.d/cert/example/.*''',
+]
+regexes = [
+  # AWS example credentials from documentation
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+  # GitHub Actions secret references (not actual secrets)
+  '''\$\{\{\s*secrets\.[A-Z_]+\s*\}\}''',
+]
+# 历史材料登记（不是放行新密钥）：commit 60ec4eb5 曾引入 6 把真实 TLS 私钥
+# （conf.d/cert/ 下 6 个服务目录各一把 *.key 私钥），对应证书已于 2025-11-09/11 到期；
+# 该提交已被后续提交从工作树清理（50515f1 轮换、7b03195 移除），现状仅存示例材料。
+[[rules]]
+id = "private-key"
+[[rules.allowlists]]
+description = "历史材料登记：已失效的旧私钥（仅这两个提交）"
+condition = "AND"
+commits = [
+  "60ec4eb57fc079e67db928861c7fc3c530a31907", # feat: add initial nginx configuration and virtual hosts
+  "50515f13b47d793b24445cb4c553a8a0a7b208e1", # chore: rotate certificate material for vhosts
+]
