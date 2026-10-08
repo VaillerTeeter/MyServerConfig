@@ -1,0 +1,20 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+trim_trailing_whitespace = false
+
+# nginx 配置：缩进 4 空格（nginx.conf / conf.d/*.conf 实测均为 4 空格，也是 nginx 官方示例惯例）
+[*.conf]
+indent_size = 4
+
+# GPL v3 standard legal text — indentation is part of the original document
+[LICENSE]
+indent_size = unset

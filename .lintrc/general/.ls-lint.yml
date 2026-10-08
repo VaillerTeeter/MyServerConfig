@@ -1,0 +1,63 @@
+---
+# ls-lint 配置 —— 文件与目录命名规范（极其严格档 / 每个位置只允许一种约定）
+# 文档：https://ls-lint.org/2.2/configuration/the-basics.html
+# 用法：ls-lint --config .lintrc/general/.ls-lint.yml
+#
+# 匹配算法（读 ls-lint 源码 internal/linter/linter.go 确认）：
+#   1) 名字 = 文件名「第一个点之前」的部分
+#      （issue-config.schema.json 的名字是 issue-config；.yamllint.yml 的名字是空串）
+#   2) 扩展名 = 按点分段后穷举 2^N 组合，每段可用 * 通配
+#      ⇒ 多段扩展名必须按「段数」写键：.yml 匹配不到 .yamllint.yml，要写 .*.yml
+#   3) 没有任何键命中 ⇒ 文件被跳过（本配置用兜底键把跳过数压到 0）
+#   4) 目录名仅在定义 .dir 时才检查；根目录本身不检查
+#   5) 多规则用 | 表示 OR —— 本配置刻意不用，每个位置只允许一种约定
+
+ls:
+  # ---------- 目录名：禁止大写 / 空格 / CamelCase ----------
+  .dir: regex:[a-z0-9._-]+
+
+  # ---------- 文件（单一约定）----------
+  .conf: kebab-case # nginx 配置（仓库核心内容）
+  .md: SCREAMING_SNAKE_CASE # 根目录 / .github 类文档（README、PULL_REQUEST_TEMPLATE）
+  .yml: kebab-case
+  .yaml: kebab-case
+  .json: kebab-case
+  .schema.json: kebab-case # 2 段扩展名必须单独成键（issue-config.schema.json）
+  .mjs: kebab-case
+  .cjs: kebab-case
+  .html: kebab-case
+  .: SCREAMING_SNAKE_CASE # 无扩展名文件（LICENSE）
+
+  # ---------- 兜底：任意段数的扩展名都必须满足 kebab-case ----------
+  .*: kebab-case # 1 段：foo.txt / foo.toml …
+  .*.*: kebab-case # 2 段
+  .*.*.*: kebab-case # 3 段（证书占位 example.example.example.key）
+
+  # ---------- 点文件：名字为空，任何规则都恒真；这些键只用于「纳入检查范围」----------
+  .gitignore: lowercase
+  .editorconfig: lowercase
+  .clineignore: lowercase
+  .gitmodules: lowercase
+  .git: lowercase
+  .nojekyll: lowercase
+  .gitkeep: lowercase
+  .prettierrc: lowercase
+  .*.yml: lowercase # .yamllint.yml / .ls-lint.yml / .semgrep.yml
+  .*.json: lowercase # .markdownlint.json
+  .*.toml: lowercase # .gitleaks.toml
+  .*.cjs: lowercase # .commitlintrc.cjs
+
+  # ---------- 位置特例：平台强制约定（仍是单一约定）----------
+  .clinerules:
+    .md: kebab-case # git-workflow.md / project-identity.md
+  .github/docs:
+    .md: kebab-case # ci/ci-checks.md
+  .github/ISSUE_TEMPLATE:
+    .dir: SCREAMING_SNAKE_CASE # GitHub 强制目录名
+    .md: snake_case # GitHub Issue 模板约定：bug_report_en.md …
+    .yml: kebab-case # config.yml
+
+ignore:
+  - .git
+  - conf.d/error
+  - logs

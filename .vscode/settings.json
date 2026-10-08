@@ -1,0 +1,103 @@
+{
+  // 显式声明远程 JSON Schema，避免 VS Code JSON 语言服务器报"不受信任"警告
+  "json.schemas": [
+    {
+      "url": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/packages/cspell-types/cspell.schema.json",
+      "fileMatch": [".lintrc/general/cspell.json"]
+    }
+  ],
+
+  // 显式指定 .clineignore 为 ignore 语言类型，防止 VS Code 自动检测误判为 Markdown
+  // .conf 交给 NGINX 扩展（language id: nginx）高亮；VS Code 内置把 .conf 归到 properties
+  "files.associations": {
+    ".clineignore": "ignore",
+    "LICENSE": "ignore",
+    "*.conf": "nginx"
+  },
+
+  // cSpell：从 .lintrc/general/cspell.json 导入词表（CI 的唯一权威来源）
+  // VS Code 扩展会合并导入配置中的 words / ignoreWords / flagWords，
+  // 无需在此重复维护词表；CI 通过 --config 显式传参，两者共用同一份配置。
+  "cSpell.import": ["./.lintrc/general/cspell.json"],
+
+  // 防止 cSpell 对 cspell.json 文件本身做拼写检查
+  "cSpell.ignorePaths": [
+    ".lintrc/general/cspell.json"
+  ],
+
+  // Trailing Spaces — 保存时自动删除行尾多余空格
+  "trailing-spaces.trimOnSave": true,
+  // 当前正在编辑的行不高亮行尾空格（避免打字时闪烁干扰）
+  "trailing-spaces.highlightCurrentLine": false,
+
+  // GitLens — 保留函数/类上方的 CodeLens（"3 commits · 2 authors" 样式）
+  // 内联 blame（行末 "John · 2 days ago"）默认保留
+  "gitlens.codeLens.enabled": true,
+
+  // CodeSnap — 截图样式
+  "codesnap.showWindowTitle": true,       // 截图顶部显示文件名
+  "codesnap.showWindowControls": true,    // 显示红绿灯按钮（macOS 风格）
+  "codesnap.roundedCorners": true,        // 圆角容器
+  "codesnap.backgroundColor": "#1e1e2e",  // 截图背景色（深色，可自行改颜色）
+  "codesnap.boxShadow": "0 20px 60px rgba(0,0,0,0.5)", // 阴影
+
+  // Image Preview — 行号侧边栏图片预览高度（默认 100，适当调大）
+  "gutterpreview.imagePreviewMaxHeight": 200,
+
+  // Path Intellisense — import 补全时自动附加文件扩展名（.ts / .json 等）
+  "path-intellisense.extensionOnImport": true,
+
+  // ── 内置功能（无需插件）────────────────────────────────────
+  // 括号对彩虹色（VS Code 1.67+ 内置）
+  "editor.bracketPairColorization.enabled": true,
+  // 高亮当前光标所在括号对的连接线
+  "editor.guides.bracketPairs": "active",
+  // 粘性滚动 — 当前所在函数/类名固定在编辑器顶部
+  "editor.stickyScroll.enabled": true,
+
+  // ── Markdown ──────────────────────────────────────────────
+  // Markdown All in One — 保存时自动更新目录（TOC）
+  "markdown.extension.toc.updateOnSave": true,
+  // TOC 使用无序列表（- ），与 GitHub 渲染一致
+  "markdown.extension.toc.orderedList": false,
+  // 斜体使用 * 而不是 _（与 GFM 推荐一致）
+  "markdown.extension.italic.indicator": "*",
+
+  // markdownlint — 指向 .lintrc 中的项目配置，与 CI 共用同一份
+  // （markdownlint.config 已弃用；扩展 0.59+ 用 configFile 指向配置文件）
+  "markdownlint.configFile": ".lintrc/docs/markdown/.markdownlint.json",
+
+  // ── JavaScript (Prettier) ────────────────────────────────
+  // Prettier — 指向非标准路径的配置文件
+  "prettier.configPath": ".lintrc/frontend/prettier/.prettierrc",
+  // JS 文件（.mjs / .cjs）默认格式化器设为 Prettier
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+
+  // ── YAML (redhat.vscode-yaml) ─────────────────────────────
+  // Schema 关联：为 YAML 文件提供智能补全和验证
+  "yaml.schemas": {
+    // Issue 模板：使用本地 schema（url 允许 mailto: 链接）
+    ".lintrc/data-formats/yaml/issue-config.schema.json": ".github/ISSUE_TEMPLATE/config.yml",
+    // GitHub Actions 工作流
+    "https://json.schemastore.org/github-workflow.json": ".github/workflows/*.yml",
+    // Dependabot 配置
+    "https://json.schemastore.org/dependabot-2.0.json": ".github/dependabot.yml"
+  },
+  // 禁用插件内置格式化（改用 Prettier，避免两者冲突）
+  "yaml.format.enable": false,
+  // YAML 文件格式化器设为 Prettier（.prettierrc 已有 YAML 专项配置：2空格、singleQuote: false）
+  "[yaml]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+
+  // ── TOML (tamasfe.even-better-toml) ──────────────────────
+  // 项目中有 .lintrc/security/.gitleaks.toml
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.formatOnSave": true
+  }
+}

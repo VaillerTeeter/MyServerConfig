@@ -1,0 +1,459 @@
+---
+# Semgrep —— 本仓库专属规则（最严格档）
+#
+# 定位：通用 SAST 规则由 CI 的 registry 规则集负责（p/owasp-top-ten、p/secrets、
+#       p/security-audit、p/r2c-security-audit、p/github-actions）；本文件只放
+#       通用规则集覆盖不到的两类：
+#         1) nginx 配置（.conf）的加固规则 —— 与 gixy、nginx -t 互补、可版本化
+#         2) 工作流的供应链 / 权限规则
+#
+# 用法：semgrep scan --config .lintrc/security/.semgrep.yml \
+#                    --config p/github-actions \
+#                    --exclude .lintrc/ --exclude conf.d/error/ .
+#
+# 机制：
+#   · languages: [generic]（GA）—— 按「文本 + 缩进」匹配
+#   · options.generic_comment_style: shell —— `#` 注释不参与匹配
+#     ⇒ 被注释掉的加固指令会被「缺失检查」判为缺失（有意的最严格行为）
+#   · 缺失检查 = pattern-regex '(?s).+' + pattern-not-regex（文件级 conjunction）；
+#     「有前提才成立」的项必须再加一条前置 pattern-regex 限定，例如 proxy_ssl_verify on
+#     只在同文件出现 proxy_pass https:// 时才要求（无条件要求会变成空转误报）
+#   · 块级检查 = pattern-inside（依赖 generic 的缩进 / 花括号嵌套）
+#   · pattern-regex 为 PCRE2 语法（支持 (?i)(?m)(?s)、lookahead、lookbehind）
+#   · paths 只写本仓真实存在的载体：`nginx.conf` 与 `conf.d/**/*.conf`。`conf.d/sites.conf`
+#     单独写一份，避免依赖 `**` 是否能匹配零层目录的语义差异；不写 .nginx 这类不存在的
+#     后缀，也不写 `sites-available`/`sites-enabled` 这类本仓没有的布局 —— 让路径空转
+#     只会让规则看起来覆盖了而实际什么都没查，并且会把 `.lintrc/**`（例如 gixy.conf）
+#     误当成 nginx 配置
+#
+# 严重度：本文件一律使用 ERROR —— 仓库纪律是「warning 也必须失败」，不留「只提示」档；
+#   规则的分量写在规则本身与 message 里，不靠降级 severity 来软化。
+#   CI 的 Strictness Guard job 会直接拒绝本文件出现降级后的 severity（WARNING/INFO）。
+# 注意：CI 里只用 `--error`（任何 severity 的命中都返回 1）；不要给 semgrep 传
+#       `--severity` —— 它筛的是规则而不是命中，传了会把规则筛空（日志只剩
+#       "Nothing to scan."、退出码 0），扫描被静默关掉反而假装通过。
+#       若判定某条命中是可接受风险，请在该位置写 `# nosemgrep: <rule-id>` 并说明原因，
+#       不要通过降级 severity、跳过规则或放行开关绕过去。
+#       工作流里的版本标签（@v7）本仓允许（见 gha-action-ref-not-tag-or-sha），因此官方规则
+#       github-actions-mutable-action-tag 在每个 uses 行尾逐处 nosemgrep，而不是关掉规则。
+#
+# 本文件只在 GitHub Actions 的 sast-scan job 中运行；细节以 CI 输出为准迭代。
+
+rules:
+  # ============================================================
+  # A. TLS / SSL
+  # ============================================================
+  - id: nginx-tls-weak-protocol
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?i)^\s*(?:proxy_)?ssl_protocols\s+[^;]*(?:SSLv2|SSLv3|TLSv1(?!\.[23]))'
+    severity: ERROR
+    message: ssl_protocols / proxy_ssl_protocols 含 SSLv2 / SSLv3 / TLSv1.0 / TLSv1.1；只允许 TLSv1.2、TLSv1.3。
+    metadata: {cwe: "CWE-326", technology: [nginx]}
+
+  - id: nginx-ssl-protocols-not-explicit
+    languages: [generic]
+    paths: {include: ["nginx.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?m)^\s*ssl_protocols\s+[^;]*TLSv1\.2'
+    severity: ERROR
+    message: 未显式声明 ssl_protocols 且启用 TLSv1.2（nginx 内置默认值包含已淘汰版本），必须显式指定 TLSv1.2/1.3。
+    metadata: {cwe: "CWE-326", technology: [nginx]}
+
+  - id: nginx-ssl-session-tickets-on
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*ssl_session_tickets\s+on\s*;'
+    severity: ERROR
+    message: ssl_session_tickets on 削弱前向保密（票据密钥不轮换时历史流量可被解密）；严格场景应设为 off。
+    metadata: {cwe: "CWE-310", technology: [nginx]}
+
+  - id: nginx-ssl-session-cache-off
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*ssl_session_cache\s+off'
+    severity: ERROR
+    message: 关闭了 ssl_session_cache，TLS 会话无法复用（握手与 CPU 开销显著上升）；应使用 shared 缓存。
+    metadata: {technology: [nginx]}
+
+  - id: nginx-ssl-prefer-server-ciphers-off
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?im)^\s*ssl_prefer_server_ciphers\s+off'
+      - pattern-regex: '(?im)^\s*(?:proxy_)?ssl_ciphers\s+[^;]*(?:(?<![!a-zA-Z0-9-])(?:RC4|DES|EXPORT|NULL|MD5|CBC3|ADH|PSK|HIGH|DEFAULT|ALL)|(?<![!-])3DES)'
+    severity: ERROR
+    message: 设了 ssl_prefer_server_ciphers off，而 ssl_ciphers 仍是宽口径（HIGH / DEFAULT / ALL）或含弱算法 —— 客户端此时可以挑到更弱的组合；要么把套件收成明确的 AEAD 白名单，要么改成 on。
+    metadata: {cwe: "CWE-326", technology: [nginx]}
+
+  - id: nginx-ssl-ciphers-weak-token
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?i)^\s*(?:proxy_)?ssl_ciphers\s+[^;]*?(?:(?<![!a-zA-Z0-9-])(?:RC4|DES|EXPORT|NULL|MD5|CBC3|ADH|PSK)|(?<![!-])3DES)'
+    severity: ERROR
+    message: >-
+      ssl_ciphers 中出现弱算法 / 弱模式（RC4、DES/3DES、EXPORT、NULL、MD5、CBC3、ADH、PSK）。
+      规则使用取反感知的 lookbehind：`!RC4`、`!aNULL`、`!EDH-DSS-DES-CBC3-SHA` 这类「排除写法」不会误报。
+    metadata: {cwe: "CWE-327", technology: [nginx]}
+
+  - id: nginx-ssl-stapling-off
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*ssl_stapling\s+off'
+    severity: ERROR
+    message: 显式关闭 OCSP stapling；建议 ssl_stapling on 且 ssl_stapling_verify on。
+    metadata: {technology: [nginx]}
+
+  - id: nginx-proxy-ssl-verify-off
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*proxy_ssl_verify\s+off'
+    severity: ERROR
+    message: proxy_ssl_verify off 表示不校验上游 HTTPS 证书，无法防御中间人。
+    metadata: {cwe: "CWE-295", technology: [nginx]}
+
+  - id: nginx-missing-proxy-ssl-verify-on
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?im)^\s*proxy_pass\s+https://'
+      - pattern-not-regex: '(?im)^\s*proxy_ssl_verify\s+on\s*;'
+    severity: ERROR
+    message: 该文件存在 https:// 上游的 proxy_pass，却未启用 proxy_ssl_verify on（被注释也算缺失），无法防御中间人。
+    metadata: {cwe: "CWE-295", technology: [nginx]}
+
+  - id: nginx-missing-ssl-stapling
+    languages: [generic]
+    paths: {include: ["nginx.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?m)^\s*ssl_stapling\s+on\s*;'
+    severity: ERROR
+    message: 未启用 OCSP stapling（ssl_stapling on），客户端需自行向 CA 查询吊销状态。
+    metadata: {technology: [nginx]}
+
+  # ---- 以上为 A 组（TLS / SSL）----
+
+  # ============================================================
+  # B. 信息暴露 / 安全响应头
+  # ============================================================
+  - id: nginx-server-tokens-on
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*server_tokens\s+on\s*;'
+    severity: ERROR
+    message: server_tokens on 会在响应头与错误页暴露 nginx 版本号；必须 off。
+    metadata: {cwe: "CWE-200", technology: [nginx]}
+
+  - id: nginx-autoindex-on
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*autoindex\s+on\s*;'
+    severity: ERROR
+    message: autoindex on 暴露目录结构与文件清单；除明确的静态下载目录外必须 off。
+    metadata: {cwe: "CWE-548", technology: [nginx]}
+
+  - id: nginx-add-header-without-always
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*add_header\s+(?![^\n]*always)[^\n]*;'
+    severity: ERROR
+    message: add_header 未带 always，安全响应头不会出现在 4xx/5xx 响应上；安全类响应头必须加 always。
+    metadata: {technology: [nginx]}
+
+  - id: nginx-missing-hsts
+    languages: [generic]
+    paths: {include: ["**/conf.d/sites/*.conf"]}
+    options: {generic_comment_style: shell}
+    # 前提（本站用 ssl_certificate 终结 TLS）与缺失合写在同一条 PCRE2 里
+    pattern-regex: '(?s)^(?=.*(?m)^\s*ssl_certificate\s)(?!.*(?i:Strict-Transport-Security)).*$'
+    severity: ERROR
+    message: 缺少 HSTS（Strict-Transport-Security），HTTPS 站点可被降级 / 劫持；建议 max-age 至少 31536000。
+    metadata: {cwe: "CWE-319", technology: [nginx]}
+
+  - id: nginx-missing-x-content-type-options
+    languages: [generic]
+    paths: {include: ["**/conf.d/sites/*.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?i)X-Content-Type-Options'
+    severity: ERROR
+    message: "缺少 X-Content-Type-Options: nosniff，浏览器可能对响应做 MIME 嗅探。"
+    metadata: {cwe: "CWE-436", technology: [nginx]}
+
+  - id: nginx-missing-frame-protection
+    languages: [generic]
+    paths: {include: ["**/conf.d/sites/*.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?i)X-Frame-Options'
+      - pattern-not-regex: '(?i)frame-ancestors'
+    severity: ERROR
+    message: 既无 X-Frame-Options 也无 CSP frame-ancestors，页面可被任意站点 iframe 嵌套（点击劫持）。
+    metadata: {cwe: "CWE-1021", technology: [nginx]}
+
+  - id: nginx-missing-referrer-policy
+    languages: [generic]
+    paths: {include: ["**/conf.d/sites/*.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?i)Referrer-Policy'
+    severity: ERROR
+    message: 缺少 Referrer-Policy，跨站跳转会泄漏完整 URL（含查询串中的敏感参数）。
+    metadata: {cwe: "CWE-200", technology: [nginx]}
+
+  # 原 nginx-missing-csp 已删除: 本仓不在网关层下发 CSP（站点全是反代本地应用的网关，
+  # 资源来源与内联脚本策略由各应用自己掌握），nginx.conf 3.7 的全局响应头集合里也没有它，
+  # 因此本仓没有它的合法承载者；留着只会逼站点写一条与应用不匹配的策略（要么打断应用，
+  # 要么写个摆设）。若将来决定在网关下发 CSP: 先在 nginx.conf 3.7 与重写了 add_header 的
+  # 站点里加上，再把这条规则加回来。
+
+  # 原 nginx-missing-permissions-policy 已删除: 与 CSP 同理——Permissions-Policy 管的是浏览器
+  # 特性（camera / geolocation / clipboard 等），策略由各应用自己决定；网关统一下发会把应用
+  # 需要的能力禁掉，而且 add_header 是「追加」，上游已发的同名头会变成两条（行为不确定）。
+  # 若将来决定在网关下发: 先在 nginx.conf 3.7 与重写了 add_header 的站点里加上，再把规则加回来。
+
+  - id: nginx-missing-proxy-hide-upstream-headers
+    languages: [generic]
+    paths: {include: ["nginx.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?im)^\s*proxy_hide_header\s+X-Powered-By'
+    severity: ERROR
+    message: nginx.conf 未隐藏上游的 X-Powered-By 响应头（会泄漏后端框架与版本）；Server / Date / X-Pad / X-Accel-* 属 nginx 默认隐藏，无需显式声明。
+    metadata: {cwe: "CWE-200", technology: [nginx]}
+
+  # ---- 以上为 B 组（信息暴露 / 安全响应头）----
+
+  # ============================================================
+  # C. 请求侧 / 滥用防护
+  # ============================================================
+  - id: nginx-dynamic-proxy-pass
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-either:
+      - pattern-regex: 'proxy_pass\s+\$'
+      - pattern-regex: 'proxy_pass\s+https?://\$(?:http_|arg_|cookie_|host|request_uri)'
+    severity: ERROR
+    message: proxy_pass 使用变量（尤其 scheme 或来自请求的变量），可能被构造成开放代理 / SSRF；应硬编码 scheme 与上游地址。
+    metadata: {cwe: "CWE-918", technology: [nginx]}
+
+  - id: nginx-open-redirect-user-input
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*(?:return\s+30[0-9]\s+\$arg_|add_header\s+\S+\s+\$arg_)'
+    severity: ERROR
+    message: 把 $arg_* 用户输入直接用于跳转或响应头，可能导致开放重定向 / HTTP 响应拆分。
+    metadata: {cwe: "CWE-601", technology: [nginx]}
+
+  - id: nginx-referer-as-access-control
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*if\s*\(\s*\$http_referer'
+    severity: ERROR
+    message: 用 $http_referer 做访问控制（Referer 可伪造）；请改用 $remote_addr 白名单或后端鉴权。
+    metadata: {cwe: "CWE-290", technology: [nginx]}
+
+  - id: nginx-real-ip-from-any
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*set_real_ip_from\s+(?:0\.0\.0\.0/0|::/0)'
+    severity: ERROR
+    message: set_real_ip_from 接受任意来源（0.0.0.0/0 或 ::/0），攻击者可伪造 X-Forwarded-For / X-Real-IP 绕过基于 IP 的限流与封禁。
+    metadata: {cwe: "CWE-290", technology: [nginx]}
+
+  - id: nginx-missing-limit-req
+    languages: [generic]
+    paths: {include: ["nginx.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?m)^\s*limit_req_zone\s'
+    severity: ERROR
+    message: nginx.conf 未定义 limit_req_zone（请求速率限制的共享内存 zone），站点想启用 limit_req 时无从引用；暴力破解 / 爬虫 / CC 攻击缺少第一道防线。
+    metadata: {cwe: "CWE-770", technology: [nginx]}
+
+  - id: nginx-missing-limit-conn
+    languages: [generic]
+    paths: {include: ["nginx.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?m)^\s*limit_conn_zone\s'
+    severity: ERROR
+    message: nginx.conf 未定义 limit_conn_zone（并发连接限制的共享内存 zone），站点想启用 limit_conn 时无从引用；单客户端可耗尽 worker 连接数。
+    metadata: {cwe: "CWE-770", technology: [nginx]}
+
+  - id: nginx-missing-client-max-body-size
+    languages: [generic]
+    paths: {include: ["nginx.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?m)^\s*client_max_body_size\s'
+    severity: ERROR
+    message: 根配置未显式设置 client_max_body_size，请求体大小不受限（磁盘 / 内存压力）；站点需要不同上限时在站点里覆盖。
+    metadata: {cwe: "CWE-770", technology: [nginx]}
+
+  - id: nginx-missing-timeouts
+    languages: [generic]
+    paths: {include: ["nginx.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?m)^\s*client_body_timeout\s'
+      - pattern-not-regex: '(?m)^\s*client_header_timeout\s'
+      - pattern-not-regex: '(?m)^\s*send_timeout\s'
+    severity: ERROR
+    message: 缺少 client_body_timeout / client_header_timeout / send_timeout，慢速连接会长期占用 worker（slowloris）。
+    metadata: {cwe: "CWE-400", technology: [nginx]}
+
+  - id: nginx-deprecated-directive
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*(?:ssl\s+on\s*;|listen\s+\S+\s+spdy\b|listen\s+\S+\s+ssl\s+http2\b)'
+    severity: ERROR
+    message: 使用已废弃的指令 / 写法（ssl on; / listen ... spdy / listen ... ssl http2）；请改用 ssl 参数与独立的 http2 指令。
+    metadata: {technology: [nginx]}
+
+  - id: nginx-missing-default-server
+    languages: [generic]
+    paths: {include: ["**/conf.d/sites/default-server.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?m)^\s*listen\s+[^;]*default_server'
+    severity: ERROR
+    message: 没有 default_server 兜底，未知 Host 的请求会落到第一个匹配的 vhost（可能泄漏内容或串站）。
+    metadata: {technology: [nginx]}
+
+  # ------------------------------------------------------------
+  # 块级检查：generic 模式按「缩进 + 花括号」判断嵌套
+  # ⚠️ 这两条依赖 generic 嵌套匹配，行为以 CI 输出为准，必要时再调整
+  # ------------------------------------------------------------
+  - id: nginx-alias-in-regex-location
+    languages: [generic]
+    paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-inside: |
+          location ~ $RE {
+            ...
+          }
+      - pattern: alias $PATH;
+    severity: ERROR
+    message: 正则 location 内使用 alias 且未精确锚定，易造成路径穿越（与 gixy 的 alias_traversal 同类风险）。
+    metadata: {cwe: "CWE-22", technology: [nginx]}
+
+  - id: nginx-server-block-missing-security-headers
+    languages: [generic]
+    paths: {include: ["conf.d/*.conf", "conf.d/**/*.conf"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-inside: |
+          server {
+            ...
+          }
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?i)Strict-Transport-Security'
+    severity: ERROR
+    message: 存在未设置 HSTS 的 server 块（块级检查：任意一个 server 块缺少该响应头即报告）。
+    metadata: {cwe: "CWE-319", technology: [nginx]}
+
+  # ---- 以上为 C 组（请求侧 / 滥用防护）----
+
+  # ============================================================
+  # D. 工作流（供应链 / 权限）
+  # ============================================================
+  - id: gha-action-on-mutable-branch
+    languages: [generic]
+    paths: {include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*uses:\s*[^@\s]+@(?:main|master|HEAD|develop)\s*$'
+    severity: ERROR
+    message: 第三方 action 引用了会移动的分支（@main / @master / @develop / @HEAD），上游被入侵或强推即等于执行任意代码。
+    metadata: {cwe: "CWE-1357"}
+
+  - id: gha-action-ref-not-tag-or-sha
+    languages: [generic]
+    paths: {include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*uses:\s*[^@\s]+@(?![0-9a-fA-F]{40}\s*(?:#.*)?$)(?![vV]?\d+(?:\.\d+)*\s*(?:#.*)?$)\S+\s*(?:#.*)?$'
+    severity: ERROR
+    message: action 的 ref 既不是版本 tag（@v7、@v1.2.3）也不是 40 位 commit SHA；@latest / @stable / @1.x / 自定义分支名这类浮动引用会被上游随时改写，等于把执行任意代码的权限交给上游。
+    metadata: {cwe: "CWE-1357"}
+
+  - id: gha-curl-pipe-shell
+    languages: [generic]
+    paths: {include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: 'curl[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b'
+    severity: ERROR
+    message: curl 输出直接管道给 shell（curl | sh / bash），远端内容被篡改即等于在 runner 上执行任意代码。
+    metadata: {cwe: "CWE-494"}
+
+  - id: gha-write-all-permissions
+    languages: [generic]
+    paths: {include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*permissions:\s*write-all'
+    severity: ERROR
+    message: "write-all 给 GITHUB_TOKEN 全仓库写权限；请按 job 最小化授权（默认 contents: read）。"
+    metadata: {cwe: "CWE-250"}
+
+  - id: gha-pull-request-target-pr-checkout
+    languages: [generic]
+    paths: {include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?m)^\s*pull_request_target:'
+      - pattern-regex: 'refs/pull/'
+    severity: ERROR
+    message: 同时使用 pull_request_target 与检出 PR 代码（refs/pull/...），不受信任代码会在持有 secrets 的上下文里执行。
+    metadata: {cwe: "CWE-284"}
+
+  - id: gha-issue-comment-pr-head-checkout
+    languages: [generic]
+    paths: {include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?m)^\s*issue_comment:'
+      - pattern-regex: 'refs/pull/'
+    severity: ERROR
+    message: "issue_comment 触发的工作流检出了 PR 分支代码（评论者可以是任何人）；确属有意功能时用 `# nosemgrep: gha-issue-comment-pr-head-checkout` 注明原因。"
+    metadata: {cwe: "CWE-284"}
+
+  - id: gha-untrusted-context-in-run
+    languages: [generic]
+    paths: {include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?mi)^[^#\n]*\$\{\{\s*github\.event\.[\w.]*\.(?:title|body|head_ref|label|message|email|ref)\b'
+    severity: ERROR
+    message: >-
+      把 github.event.* 的不可信字段（title / body / head_ref / label / message / email / ref）插入工作流表达式，
+      在 run 脚本中会造成脚本注入（在 if / env 中一般为良性，可用 `# nosemgrep` 豁免）；
+      更精确的 AST 版本来自 registry 的 p/github-actions。
+    metadata: {cwe: "CWE-78"}
