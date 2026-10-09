@@ -1,0 +1,244 @@
+---
+# Semgrep —— 本仓库专属规则（最严格档）
+#
+# 定位：通用 SAST 规则由 CI 的 registry 规则集负责（p/owasp-top-ten、p/secrets、
+#       p/security-audit、p/r2c-security-audit、p/github-actions）；本文件只放
+#       通用规则集覆盖不到的部分：
+#         1) frps 配置（frps.toml）的加固规则 —— 与 taplo、secret-scan 互补、可版本化
+#         2) 工作流的供应链 / 权限规则
+#
+# 用法：semgrep scan --config .lintrc/security/.semgrep.yml \
+#                    --config p/github-actions \
+#                    --exclude .lintrc/ .
+#
+# 机制：
+#   · languages: [generic]（GA）—— 按「文本 + 缩进」匹配
+#   · options.generic_comment_style: shell —— `#` 注释不参与匹配
+#     ⇒ 被注释掉的加固指令会被「缺失检查」判为缺失（有意的最严格行为）
+#   · 缺失检查 = pattern-regex '(?s).+' + pattern-not-regex（文件级 conjunction）；
+#     「有前提才成立」的项必须再加一条前置 pattern-regex 限定，
+#     否则会变成空转误报
+#   · 块级检查 = pattern-inside（依赖 generic 的缩进 / 花括号嵌套）
+#   · pattern-regex 为 PCRE2 语法（支持 (?i)(?m)(?s)、lookahead、lookbehind）
+#   · paths 只写本仓真实存在的载体：`frps.toml` 与 `.github/workflows/*.yml`（含 `*.yaml`）。
+#     不写本仓库不存在的路径 —— 让路径空转只会让规则看起来覆盖了而实际什么都没查，
+#     并且会把 `.lintrc/**`（例如本配置文件自身）误当成扫描对象
+#
+# 严重度：本文件一律使用 ERROR —— 仓库纪律是「warning 也必须失败」，不留「只提示」档；
+#   规则的分量写在规则本身与 message 里，不靠降级 severity 来软化。
+#   CI 的 Strictness Guard job 会直接拒绝本文件出现降级后的 severity（WARNING/INFO）。
+# 注意：CI 里只用 `--error`（任何 severity 的命中都返回 1）；不要给 semgrep 传
+#       `--severity` —— 它筛的是规则而不是命中，传了会把规则筛空（日志只剩
+#       "Nothing to scan."、退出码 0），扫描被静默关掉反而假装通过。
+#       若判定某条命中是可接受风险，请在该位置写 `# nosemgrep: <rule-id>` 并说明原因，
+#       不要通过降级 severity、跳过规则或放行开关绕过去。
+#       工作流里的版本标签（@v7）本仓允许（见 gha-action-ref-not-tag-or-sha），因此官方规则
+#       github-actions-mutable-action-tag 在每个 uses 行尾逐处 nosemgrep，而不是关掉规则。
+#
+# 本文件只在 GitHub Actions 的 sast-scan job 中运行；细节以 CI 输出为准迭代。
+
+rules:
+  # ============================================================
+  # frps 配置（frps.toml）
+  # ============================================================
+  # 与 registry 规则集互补：这些是 frp 特有的配置加固项，通用 SAST 覆盖不到。
+  # 注意: options.generic_comment_style: shell 让 `#` 注释行不参与匹配 ——
+  #   被注释掉的「可选项」不会触发规则；而「缺失检查」会把注释掉的必需项判为缺失
+  #   （有意的最严格行为）。所有行首正则都带 (?m)，保证 ^/$ 按「行」而非「整篇」匹配。
+
+  # TLS: 未强制加密隧道
+  - id: frps-tls-force-off
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*transport\.tls\.force\s*=\s*false\s*(?:#.*)?$'
+    severity: ERROR
+    message: 服务端未强制 TLS（transport.tls.force = false）：公网 frps 会接受明文隧道。改为 true 即可，不需要自备证书（frps 会随机生成一张用于加密隧道）。
+    metadata: {cwe: "CWE-319"}
+
+  # 鉴权: token 为空
+  - id: frps-token-empty
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*auth\.token\s*=\s*""\s*(?:#.*)?$'
+    severity: ERROR
+    message: auth.token 为空等于不鉴权：任何客户端都能接入，并把服务器端口映射走。
+    metadata: {cwe: "CWE-306"}
+
+  # 鉴权: token 过短
+  - id: frps-token-too-short
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*auth\.token\s*=\s*"[^"]{1,7}"\s*(?:#.*)?$'
+    severity: ERROR
+    message: auth.token 少于 8 个字符，容易被暴力猜解；用 `openssl rand -hex 32` 生成一段随机值。
+    metadata: {cwe: "CWE-521"}
+
+  # Dashboard: 监听在非回环地址
+  - id: frps-dashboard-public
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*webServer\.addr\s*=\s*"(?!127\.|\[::1\]|localhost)[^"]*"\s*(?:#.*)?$'
+    severity: ERROR
+    message: Dashboard 监听在非回环地址上：管理面（隧道增删、日志、客户端信息）暴露给了所在网络。确需如此时应同时启用 webServer.tls 与强口令。
+    metadata: {cwe: "CWE-284"}
+
+  # Dashboard: 启用但未设密码
+  - id: frps-dashboard-no-password
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      # 前置条件（webServer.port 处于启用状态）必须写进 lookahead，而不是单独成一条
+      # pattern-regex —— 否则 semgrep 会把匹配范围缩到那一行，使下面的 pattern-not-regex
+      # 因「范围不重叠」而失效，规则会在任何启用 Dashboard 的文件上误报（CI 已实证）。
+      # (?ms) 让 . 跨行、^/$ 按行；(?s) 下的 .+ 让匹配范围撑满全篇。
+      - pattern-regex: '(?ms)(?=.*^[ \t]*webServer\.port[ \t]*=[ \t]*[1-9]\d*).+'
+      - pattern-not-regex: '(?m)^[ \t]*webServer\.password[ \t]*=\s*"[^"]+"'
+    severity: ERROR
+    message: 启用了 Dashboard（webServer.port 非 0）却没有设置 webServer.password：访客无需口令即可管理所有隧道。
+    metadata: {cwe: "CWE-306"}
+
+  # Dashboard: 暴露 pprof 调试接口
+  - id: frps-dashboard-pprof-enabled
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*webServer\.pprofEnable\s*=\s*true\s*(?:#.*)?$'
+    severity: ERROR
+    message: 开启 webServer.pprofEnable 会暴露运行时细节（goroutine 栈、内存剖析），仅应在排障时临时打开。
+    metadata: {cwe: "CWE-200"}
+
+  # 监控: 指标暴露在非回环地址
+  - id: frps-prometheus-exposed
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?m)^\s*enablePrometheus\s*=\s*true'
+      - pattern-regex: '(?m)^\s*webServer\.addr\s*=\s*"(?!127\.|\[::1\]|localhost)[^"]*"'
+    severity: ERROR
+    message: Prometheus 指标（/metrics）与非回环的 Dashboard 地址同时开启：隧道数量、客户端信息等会对外暴露；指标应只给本机或内网采集端读取。
+    metadata: {cwe: "CWE-200"}
+
+  # 端口: 未声明 allowPorts（缺失检查）
+  - id: frps-allow-ports-missing
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?s).+'
+      - pattern-not-regex: '(?m)^\s*allowPorts\s*='
+    severity: ERROR
+    message: 未声明 allowPorts：frpc 可以占用服务器上任意端口（含与 nginx 等服务冲突的端口）。公网服务端务必写明允许的端口或区间。
+    metadata: {cwe: "CWE-284"}
+
+  # 端口: 单客户端代理数不限制
+  - id: frps-max-ports-unlimited
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*maxPortsPerClient\s*=\s*0\s*(?:#.*)?$'
+    severity: ERROR
+    message: maxPortsPerClient = 0 表示不限制单个客户端的代理数：一个失控的客户端即可占满 allowPorts 放行的全部端口。
+    metadata: {cwe: "CWE-770"}
+
+  # SSH 隧道网关: 未配置客户端鉴权
+  - id: frps-ssh-gateway-without-authorization
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      # 同上：前置条件（sshTunnelGateway.bindPort）进 lookahead，保持
+      # 「整篇 .+ + pattern-not-regex」的两模式结构，避免范围缩窄导致豁免失效。
+      - pattern-regex: '(?ms)(?=.*^[ \t]*sshTunnelGateway\.bindPort[ \t]*=[ \t]*[1-9]\d*).+'
+      - pattern-not-regex: '(?m)^[ \t]*sshTunnelGateway\.authorizedKeysFile[ \t]*=\s*"[^"]+"'
+    severity: ERROR
+    message: 启用了 SSH 隧道网关却未配置 sshTunnelGateway.authorizedKeysFile：任何人都能通过 ssh -R 在本机建立隧道；应指定授权公钥文件。
+    metadata: {cwe: "CWE-306"}
+
+  # 端口: vhost 与 nginx 抢 80/443
+  - id: frps-vhost-port-conflicts
+    languages: [generic]
+    paths: {include: ["frps.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*vhost(?:HTTP|HTTPS)Port\s*=\s*(?:80|443)\s*(?:#.*)?$'
+    severity: ERROR
+    message: vhost 端口用了 80 或 443：本拓扑里这两个端口由 nginx 占用（域名证书也在 nginx 上），frps 会因端口被占而启动失败。改用非标准端口，或保持禁用。
+    metadata: {cwe: "CWE-1188"}
+
+  # ============================================================
+  # 工作流（供应链 / 权限）
+  # ============================================================
+  - id: gha-action-on-mutable-branch
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*uses:\s*[^@\s]+@(?:main|master|HEAD|develop)\s*$'
+    severity: ERROR
+    message: 第三方 action 引用了会移动的分支（@main / @master / @develop / @HEAD），上游被入侵或强推即等于执行任意代码。
+    metadata: {cwe: "CWE-1357"}
+
+  - id: gha-action-ref-not-tag-or-sha
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*uses:\s*[^@\s]+@(?![0-9a-fA-F]{40}\s*(?:#.*)?$)(?![vV]?\d+(?:\.\d+)*\s*(?:#.*)?$)\S+\s*(?:#.*)?$'
+    severity: ERROR
+    message: action 的 ref 既不是版本 tag（@v7、@v1.2.3）也不是 40 位 commit SHA；@latest / @stable / @1.x / 自定义分支名这类浮动引用会被上游随时改写，等于把执行任意代码的权限交给上游。
+    metadata: {cwe: "CWE-1357"}
+
+  - id: gha-curl-pipe-shell
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: 'curl[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b'
+    severity: ERROR
+    message: curl 输出直接管道给 shell（curl | sh / bash），远端内容被篡改即等于在 runner 上执行任意代码。
+    metadata: {cwe: "CWE-494"}
+
+  - id: gha-write-all-permissions
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*permissions:\s*write-all'
+    severity: ERROR
+    message: "write-all 给 GITHUB_TOKEN 全仓库写权限；请按 job 最小化授权（默认 contents: read）。"
+    metadata: {cwe: "CWE-250"}
+
+  - id: gha-pull-request-target-pr-checkout
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?m)^\s*pull_request_target:'
+      - pattern-regex: 'refs/pull/'
+    severity: ERROR
+    message: 同时使用 pull_request_target 与检出 PR 代码（refs/pull/...），不受信任代码会在持有 secrets 的上下文里执行。
+    metadata: {cwe: "CWE-284"}
+
+  - id: gha-issue-comment-pr-head-checkout
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?m)^\s*issue_comment:'
+      - pattern-regex: 'refs/pull/'
+    severity: ERROR
+    message: "issue_comment 触发的工作流检出了 PR 分支代码（评论者可以是任何人）；确属有意功能时用 `# nosemgrep: gha-issue-comment-pr-head-checkout` 注明原因。"
+    metadata: {cwe: "CWE-284"}
+
+  - id: gha-untrusted-context-in-run
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?mi)^[^#\n]*\$\{\{\s*github\.event\.[\w.]*\.(?:title|body|head_ref|label|message|email|ref)\b'
+    severity: ERROR
+    message: >-
+      把 github.event.* 的不可信字段（title / body / head_ref / label / message / email / ref）插入工作流表达式，
+      在 run 脚本中会造成脚本注入（在 if / env 中一般为良性，可用 `# nosemgrep` 豁免）；
+      更精确的 AST 版本来自 registry 的 p/github-actions。
+    metadata: {cwe: "CWE-78"}
