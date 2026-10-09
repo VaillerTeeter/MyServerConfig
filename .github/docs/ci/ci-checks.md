@@ -69,7 +69,7 @@ job 在同一趟里同时带 `--strict` 与 `--format github`：前者把 warnin
 
 | 配置项 | 当前值 | 说明 |
 | --- | --- | --- |
-| `words` | 当前为空，待从零重建 | 按 CI 报出的未知词逐条确认后再加入（如 `frps`、`frpc`、`taplo`、`autogen`） |
+| `words` | 增量维护的词表（约 76 词） | CI 报出的未知词经确认后加入；另预置本仓库用到的工具与协议术语（如 `taplo`、`semgrep`、`QUIC`、`XTCP`） |
 | `dictionaries` | `en_US`、`markdown`、`networking-terms` | 英文基础、Markdown 术语、网络与 TLS 术语 |
 | `ignorePaths` | `**/.git/**`、`**/.lintrc/general/cspell.json`、`**/logs/**` | 不检查版本库、本配置文件自身与运行时日志目录 |
 | `enableGlobDot` | `true` | 允许检查以 `.` 开头的文件与目录（`.github`、`.lintrc`、`.clinerules` 必须被检查） |
