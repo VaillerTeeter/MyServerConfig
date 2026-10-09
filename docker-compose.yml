@@ -1,0 +1,21 @@
+---
+services:
+  frps:
+    image: snowdreamtech/frps:latest
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    stop_grace_period: 20s
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ./frps.toml:/etc/frp/frps.toml:ro
+      - ./logs:/etc/frp/log
