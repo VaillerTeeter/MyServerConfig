@@ -34,6 +34,7 @@ deliberately fake. Keep it that way:
 - Domain name: `example.example.example` (subdomains reuse the same placeholder, e.g.
   `stream.example.example.example`)
 - Upstream address and port: loopback with a numeric placeholder port, e.g. `127.0.0.1:7500`
+  (frps console) or `127.0.0.1:7400` (frpc console)
   (a non-numeric port such as `xxxx` fails `nginx -t`)
 - TLS material: a self-signed example chain under `conf.d/cert/example/`, committed on purpose
 
@@ -124,6 +125,7 @@ context.
 │   ├── sites.conf                        # enable switchboard: only listed sites are loaded
 │   ├── sites/                            # one file per site (not auto-included)
 │   │   ├── default-server.conf           # fallback: unknown host 444 / TLS rejection
+│   │   ├── frpc.conf                     # frpc web console reverse proxy
 │   │   ├── frps.conf                     # frps web console reverse proxy
 │   │   └── stream.conf                   # video streaming (Emby)
 │   └── snippets/                         # fragments shared by the site files
