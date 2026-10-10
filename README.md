@@ -57,7 +57,7 @@ conf.d/cert/<域名>/<域名>.key          # 私钥
 | 位置 | 示例值 | 改成 |
 | --- | --- | --- |
 | `server_name`（80 段与 443 段各一处） | `stream.example.example.example` | 真实域名 |
-| `server` 与 `proxy_redirect` | `127.0.0.1:9005` | frp 映射到服务器的端口 |
+| `server` 与 `proxy_redirect` | `127.0.0.1:8096` | frp 映射到服务器的端口 |
 | `ssl_certificate`、`ssl_certificate_key` | `conf.d/cert/example/…` | 上一步放好的证书 |
 
 第二步决定哪些站点生效——`conf.d/sites.conf` 是启用清单，注释掉一行即禁用：
@@ -140,7 +140,7 @@ location /error/ {
 
 ## 必须知道的几条约定
 
-- **占位符都是假的**：域名用 `example.example.example`，端口用 `127.0.0.1:9001`–`9005`，证书用 `conf.d/cert/example/` 的自签样例。仓库里不放任何真实域名、IP、端口或凭据。
+- **占位符都是假的**：域名用 `example.example.example`，端口用 `127.0.0.1:9001`–`8096`，证书用 `conf.d/cert/example/` 的自签样例。仓库里不放任何真实域名、IP、端口或凭据。
 - **绝对路径是刻意的**：`nginx.conf` 使用 `/etc/nginx/mime.types` 与 `/etc/nginx/conf.d/*.conf`，对应容器内或软件包安装的路径。
 - **注释即交付物**：每条指令都写清作用域、默认值与取值理由，不要删减或翻译这些注释。
 - **三条继承陷阱**（站点层面最容易踩，细节见配置文件注释）：
