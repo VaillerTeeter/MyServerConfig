@@ -20,7 +20,7 @@ tooling that keep it correct. The substance of the project lives in these files:
 | File | Size | Scope |
 | --- | --- | --- |
 | `nginx.conf` | ~695 lines | main / events / http contexts: worker tuning, buffers, timeouts, hash tables, logging, limit-req and limit-conn, gzip, proxy defaults, global TLS, then `include /etc/nginx/conf.d/*.conf` |
-| `conf.d/sites/*.conf` | one file per site | `upstream` keepalive pool, HTTP to HTTPS redirect, HTTPS server, error pages, and the cache / upload / streaming differences; loaded only when listed in `conf.d/sites.conf` |
+| `conf.d/sites/*.conf` | one file per site | `upstream` keepalive pool, HTTP to HTTPS redirect, HTTPS server, error pages, and the per-site differences (streaming buffer and timeout tuning, admin panel hardening); loaded only when listed in `conf.d/sites.conf` |
 
 Every directive is preceded by an explanatory Chinese comment block that states its type, scope,
 default value and the reasoning (performance or security trade-off) behind the chosen value.
@@ -32,8 +32,8 @@ The repository is meant to be reusable as an example, so every environment-speci
 deliberately fake. Keep it that way:
 
 - Domain name: `example.example.example` (subdomains reuse the same placeholder, e.g.
-  `blog.example.example.example`)
-- Upstream address and port: loopback with a numeric placeholder port, e.g. `127.0.0.1:9001`
+  `stream.example.example.example`)
+- Upstream address and port: loopback with a numeric placeholder port, e.g. `127.0.0.1:7500`
   (a non-numeric port such as `xxxx` fails `nginx -t`)
 - TLS material: a self-signed example chain under `conf.d/cert/example/`, committed on purpose
 
@@ -104,7 +104,6 @@ context.
 ├── conf.d/                               # virtual host configuration snippets
 │   ├── cert/                             # TLS material; git-ignored except example/
 │   │   └── example/                      # self-signed example chain (committed on purpose)
-│   │       ├── example.example.example.csr
 │   │       ├── example.example.example.key
 │   │       ├── example.example.example_bundle.crt
 │   │       └── example.example.example_bundle.pem
@@ -123,13 +122,13 @@ context.
 │   │   ├── shuffle/
 │   │   └── win98/                        # each of the 11 themes holds 20 status code pages (400-505)
 │   ├── sites.conf                        # enable switchboard: only listed sites are loaded
-│   └── sites/                            # one file per site (not auto-included)
-│       ├── default-server.conf           # fallback: unknown host 404 / TLS reject
-│       ├── blog.conf                     # blog
-│       ├── startpage.conf                # site directory / start page
-│       ├── netdisk.conf                  # net disk
-│       ├── gallery.conf                  # photo gallery
-│       └── stream.conf                   # video streaming
+│   ├── sites/                            # one file per site (not auto-included)
+│   │   ├── default-server.conf           # fallback: unknown host 444 / TLS rejection
+│   │   ├── frps.conf                     # frps web console reverse proxy
+│   │   └── stream.conf                   # video streaming (Emby)
+│   └── snippets/                         # fragments shared by the site files
+│       ├── error-pages.conf              # serves the themed error pages (internal only)
+│       └── redirect-to-https.conf        # listen 80 + 301 to HTTPS
 ├── logs/                                 # runtime log directory; only .gitkeep is tracked
 │   └── .gitkeep                          # placeholder that keeps the directory in git
 ├── CODE_OF_CONDUCT.md                    # code of conduct
@@ -137,6 +136,7 @@ context.
 ├── LICENSE                               # GPL-3.0
 ├── README.md                             # project readme
 ├── SECURITY.md                           # security policy and vulnerability reporting
+├── docker-compose.yml                    # nginx service: host network, config and log mounts
 └── nginx.conf                            # main Nginx configuration
 ```
 
