@@ -1,0 +1,232 @@
+---
+# Semgrep —— 本仓库专属规则（最严格档）
+#
+# 定位：通用 SAST 规则由 CI 的 registry 规则集负责（p/owasp-top-ten、p/secrets、
+#       p/security-audit、p/r2c-security-audit、p/github-actions）；本文件只放
+#       通用规则集覆盖不到的部分：
+#         1) frpc 配置（frpc.toml）的加固规则 —— 与 taplo、secret-scan 互补、可版本化
+#         2) 工作流的供应链 / 权限规则
+#
+# 用法：semgrep scan --config .lintrc/security/.semgrep.yml \
+#                    --config p/github-actions \
+#                    --exclude .lintrc/ .
+#
+# 机制：
+#   · languages: [generic]（GA）—— 按「文本 + 缩进」匹配
+#   · options.generic_comment_style: shell —— `#` 注释不参与匹配
+#     ⇒ 被注释掉的加固指令会被「缺失检查」判为缺失（有意的最严格行为）
+#   · 缺失检查 = pattern-regex '(?s).+' + pattern-not-regex（文件级 conjunction）；
+#     「有前提才成立」的项必须再加一条前置 pattern-regex 限定，
+#     否则会变成空转误报
+#   · 块级检查 = pattern-inside（依赖 generic 的缩进 / 花括号嵌套）
+#   · pattern-regex 为 PCRE2 语法（支持 (?i)(?m)(?s)、lookahead、lookbehind）
+#   · paths 只写本仓真实存在的载体：`frpc.toml` 与 `.github/workflows/*.yml`（含 `*.yaml`）。
+#     不写本仓库不存在的路径 —— 让路径空转只会让规则看起来覆盖了而实际什么都没查，
+#     并且会把 `.lintrc/**`（例如本配置文件自身）误当成扫描对象
+#
+# 严重度：本文件一律使用 ERROR —— 仓库纪律是「warning 也必须失败」，不留「只提示」档；
+#   规则的分量写在规则本身与 message 里，不靠降级 severity 来软化。
+#   CI 的 Strictness Guard job 会直接拒绝本文件出现降级后的 severity（WARNING/INFO）。
+# 注意：CI 里只用 `--error`（任何 severity 的命中都返回 1）；不要给 semgrep 传
+#       `--severity` —— 它筛的是规则而不是命中，传了会把规则筛空（日志只剩
+#       "Nothing to scan."、退出码 0），扫描被静默关掉反而假装通过。
+#       若判定某条命中是可接受风险，请在该位置写 `# nosemgrep: <rule-id>` 并说明原因，
+#       不要通过降级 severity、跳过规则或放行开关绕过去。
+#       工作流里的版本标签（@v7）本仓允许（见 gha-action-ref-not-tag-or-sha），因此官方规则
+#       github-actions-mutable-action-tag 在每个 uses 行尾逐处 nosemgrep，而不是关掉规则。
+#
+# 本文件只在 GitHub Actions 的 sast-scan job 中运行；细节以 CI 输出为准迭代。
+
+rules:
+  # ============================================================
+  # frpc 配置（frpc.toml）
+  # ============================================================
+  # 与 registry 规则集互补：这些是 frp 特有的配置加固项，通用 SAST 覆盖不到。
+  # 注意: options.generic_comment_style: shell 让 `#` 注释行不参与匹配 ——
+  #   被注释掉的「可选项」不会触发规则；而「缺失检查」会把注释掉的必需项判为缺失
+  #   （有意的最严格行为）。所有行首正则都带 (?m)，保证 ^/$ 按「行」而非「整篇」匹配。
+  # 说明: 客户端侧只有下列约束能在单文件内静态判定；「remotePort 是否落在 frps 的 allowPorts
+  #   内」「protocol 是否与 frps 开放的端口匹配」等跨文件约束不在此列（本文件不做跨文件推断）。
+
+  # TLS: 客户端未启用加密隧道
+  - id: frpc-tls-disabled
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*transport\.tls\.enable\s*=\s*false\s*(?:#.*)?$'
+    severity: ERROR
+    message: 客户端未启用 TLS（transport.tls.enable = false）：frps 侧 transport.tls.force = true 时会拒绝这类连接；两端都放开则隧道与 token 在公网明文传输。改为 true 即可，无需自备证书。
+    metadata: {cwe: "CWE-319"}
+
+  # 鉴权: token 为空
+  - id: frpc-token-empty
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*auth\.token\s*=\s*""\s*(?:#.*)?$'
+    severity: ERROR
+    message: auth.token 为空：frps 开启鉴权时会被直接拒绝；若服务端也未设 token，任何人都能接入并占用映射端口。
+    metadata: {cwe: "CWE-306"}
+
+  # 鉴权: token 过短
+  - id: frpc-token-too-short
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*auth\.token\s*=\s*"[^"]{1,7}"\s*(?:#.*)?$'
+    severity: ERROR
+    message: auth.token 少于 8 个字符，容易被暴力猜解；用 `openssl rand -hex 32` 生成随机值，并与 frps 的 auth.token 保持一致。
+    metadata: {cwe: "CWE-521"}
+
+  # Admin UI: 监听在非回环地址
+  - id: frpc-admin-public
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*webServer\.addr\s*=\s*"(?!127\.|\[::1\]|localhost)[^"]*"\s*(?:#.*)?$'
+    severity: ERROR
+    message: Admin UI 监听在非回环地址上：同一网络内任何人都能尝试管理本客户端（查看全部代理、触发 reload）。确需如此时应同时启用 webServer.tls 与强口令。
+    metadata: {cwe: "CWE-284"}
+
+  # Admin UI: 启用但未设密码
+  - id: frpc-admin-no-password
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      # 前置条件（webServer.port 处于启用状态）必须写进 lookahead，而不是单独成一条
+      # pattern-regex —— 否则 semgrep 会把匹配范围缩到那一行，使下面的 pattern-not-regex
+      # 因「范围不重叠」而失效，规则会在任何启用 Admin UI 的文件上误报（CI 已实证）。
+      # (?ms) 让 . 跨行、^/$ 按行；(?s) 下的 .+ 让匹配范围撑满全篇。
+      - pattern-regex: '(?ms)(?=.*^[ \t]*webServer\.port[ \t]*=[ \t]*[1-9]\d*).+'
+      - pattern-not-regex: '(?m)^[ \t]*webServer\.password[ \t]*=\s*"[^"]+"'
+    severity: ERROR
+    message: 启用了本地 Admin UI（webServer.port 非 0）却没有设置 webServer.password：访客无需口令即可管理本客户端；若再经隧道映射出去，等于不设防。
+    metadata: {cwe: "CWE-306"}
+
+  # Admin UI: 暴露 pprof 调试接口
+  - id: frpc-admin-pprof-enabled
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*webServer\.pprofEnable\s*=\s*true\s*(?:#.*)?$'
+    severity: ERROR
+    message: 开启 webServer.pprofEnable 会暴露运行时细节（goroutine 栈、内存剖析），仅应在排障时临时打开。
+    metadata: {cwe: "CWE-200"}
+
+  # 传输: 连接服务端的代理地址里带明文凭据
+  - id: frpc-proxyurl-plaintext-credentials
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?mi)^\s*transport\.proxyURL\s*=\s*"[a-z0-9+.-]+://[^"/@\s]+:[^"/@\s]+@'
+    severity: ERROR
+    message: transport.proxyURL 里带着明文「用户名:口令」：该凭据会随配置文件进版本库，也会出现在日志与进程信息里。改用无凭据代理，或把凭据放到环境变量/外部文件。
+    metadata: {cwe: "CWE-798"}
+
+  # 鉴权: OIDC 跳过证书校验
+  - id: frpc-oidc-insecure-skip-verify
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*auth\.oidc\.insecureSkipVerify\s*=\s*true\s*(?:#.*)?$'
+    severity: ERROR
+    message: auth.oidc.insecureSkipVerify = true 会跳过对 OIDC 令牌端点的证书校验（官方标注 INSECURE）：中间人可伪造端点并签发 token。改为 false，并用 auth.oidc.trustedCaFile 指定自签 CA。
+    metadata: {cwe: "CWE-295"}
+
+  # 传输: tcpMux 与 frps 不一致
+  - id: frpc-tcpmux-mismatch
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?m)^\s*transport\.tcpMux\s*=\s*false\s*(?:#.*)?$'
+    severity: ERROR
+    message: transport.tcpMux = false：官方要求它与 frps 的 transport.tcpMux 完全相同，而服务端通常使用默认值 true —— 两端不一致会导致连接建立失败。若确实两端同时关闭，请写 # nosemgrep 说明原因。
+    metadata: {cwe: "CWE-1188"}
+
+  # 代理: tcp/udp 代理缺少 remotePort（缺失检查）
+  - id: frpc-proxy-missing-remote-port
+    languages: [generic]
+    paths: {include: ["frpc.toml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      # 同上：前置条件（存在 tcp/udp 类型的代理）进 lookahead，保持
+      # 「整篇 .+ + pattern-not-regex」的两模式结构，避免范围缩窄导致豁免失效。
+      - pattern-regex: '(?ms)(?=.*^[ \t]*type[ \t]*=[ \t]*"(?:tcp|udp)").+'
+      - pattern-not-regex: '(?m)^[ \t]*remotePort[ \t]*='
+    severity: ERROR
+    message: 声明了 tcp/udp 类型的代理却没有任何 remotePort：frps 无法为该代理分配监听端口，注册会被拒绝（remotePort 还必须落在 frps 的 allowPorts 内）。
+    metadata: {cwe: "CWE-1188"}
+
+  # ============================================================
+  # 工作流（供应链 / 权限）
+  # ============================================================
+  - id: gha-action-on-mutable-branch
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*uses:\s*[^@\s]+@(?:main|master|HEAD|develop)\s*$'
+    severity: ERROR
+    message: 第三方 action 引用了会移动的分支（@main / @master / @develop / @HEAD），上游被入侵或强推即等于执行任意代码。
+    metadata: {cwe: "CWE-1357"}
+
+  - id: gha-action-ref-not-tag-or-sha
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*uses:\s*[^@\s]+@(?![0-9a-fA-F]{40}\s*(?:#.*)?$)(?![vV]?\d+(?:\.\d+)*\s*(?:#.*)?$)\S+\s*(?:#.*)?$'
+    severity: ERROR
+    message: action 的 ref 既不是版本 tag（@v7、@v1.2.3）也不是 40 位 commit SHA；@latest / @stable / @1.x / 自定义分支名这类浮动引用会被上游随时改写，等于把执行任意代码的权限交给上游。
+    metadata: {cwe: "CWE-1357"}
+
+  - id: gha-curl-pipe-shell
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: 'curl[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b'
+    severity: ERROR
+    message: curl 输出直接管道给 shell（curl | sh / bash），远端内容被篡改即等于在 runner 上执行任意代码。
+    metadata: {cwe: "CWE-494"}
+
+  - id: gha-write-all-permissions
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '^\s*permissions:\s*write-all'
+    severity: ERROR
+    message: "write-all 给 GITHUB_TOKEN 全仓库写权限；请按 job 最小化授权（默认 contents: read）。"
+    metadata: {cwe: "CWE-250"}
+
+  - id: gha-pull-request-target-pr-checkout
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?m)^\s*pull_request_target:'
+      - pattern-regex: 'refs/pull/'
+    severity: ERROR
+    message: 同时使用 pull_request_target 与检出 PR 代码（refs/pull/...），不受信任代码会在持有 secrets 的上下文里执行。
+    metadata: {cwe: "CWE-284"}
+
+  - id: gha-issue-comment-pr-head-checkout
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    patterns:
+      - pattern-regex: '(?m)^\s*issue_comment:'
+      - pattern-regex: 'refs/pull/'
+    severity: ERROR
+    message: "issue_comment 触发的工作流检出了 PR 分支代码（评论者可以是任何人）；确属有意功能时用 `# nosemgrep: gha-issue-comment-pr-head-checkout` 注明原因。"
+    metadata: {cwe: "CWE-284"}
+
+  - id: gha-untrusted-context-in-run
+    languages: [generic]
+    paths: {include: ["**/.github/workflows/*.yml", "**/.github/workflows/*.yaml"]}
+    options: {generic_comment_style: shell}
+    pattern-regex: '(?mi)^[^#\n]*\$\{\{\s*github\.event\.[\w.]*\.(?:title|body|head_ref|label|message|email|ref)\b'
+    severity: ERROR
+    message: >-
+      把 github.event.* 的不可信字段（title / body / head_ref / label / message / email / ref）插入工作流表达式，
+      在 run 脚本中会造成脚本注入（在 if / env 中一般为良性，可用 `# nosemgrep` 豁免）；
+      更精确的 AST 版本来自 registry 的 p/github-actions。
+    metadata: {cwe: "CWE-78"}

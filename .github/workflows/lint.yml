@@ -1,0 +1,507 @@
+---
+# CI — Lint 工作流
+#
+# 设计原则：`.lintrc` 里每保留一个配置，就在此对应一个 job；与本仓库内容无关的检查一律不引入。
+# 覆盖对象：frpc 的 TOML 配置、Markdown 文档、YAML、GitHub Actions 工作流、提交信息、
+#           密钥与 SAST、文件命名、空白与行尾规范、外链可用性、Issue 模板 schema。
+# 约定：`.lintrc/**` 既是各 job 引用的配置来源，也与其他文件一样接受通用规范检查
+#       （命名、空白与行尾、拼写、YAML 规范、密钥与 SAST）。
+# 纪律：所有检查「命中即失败」，不允许把问题降级成「只提示」；各工具对 warning 的退出码
+#       语义不一致，因此由 strictness-guard job 在配置层兜底（禁止降级与放行写法）。
+# 例外：工作流里的版本标签（@v7）本仓允许 —— 策略见 .lintrc/security/.semgrep.yml 的
+#       gha-action-ref-not-tag-or-sha；官方规则 github-actions-mutable-action-tag 因此
+#       在每处 uses 行尾逐处声明 nosemgrep，而不是关掉整条规则。
+
+name: Lint
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - MyFrpc
+  push:
+    branches:
+      - MyFrpc
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# 全局 shell。GitHub 的默认 shell 是 `bash -e {0}`：管道里前一个命令失败不会让这一步失败
+# （`cmd | tee`、`curl | tar` 都会吞掉错误）。显式声明 bash 后 runner 会改用
+# `bash --noprofile --norc -eo pipefail {0}`，把管道中的失败一并暴露出来。
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ============================================================
+  # 文档 / 拼写 / 命名
+  # ============================================================
+  markdown-lint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Install markdownlint config
+        run: cp .lintrc/docs/markdown/.markdownlint.json .markdownlint.json
+
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v24 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          globs: "**/*.md"
+
+  yaml-lint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Set up Python
+        uses: actions/setup-python@v6 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          python-version: "3.13"
+
+      - name: Install yamllint
+        run: pip install yamllint==1.35.1
+
+      - name: Collect YAML files
+        id: collect
+        run: |
+          mapfile -t FILES < <(find . \( -name "*.yml" -o -name "*.yaml" \) \
+            ! -path "./.git/*" \
+            ! -path "./logs/*" | sort)
+          printf '%s\n' "${FILES[@]}" > /tmp/yaml-files.txt
+          echo "count=${#FILES[@]}" >> "$GITHUB_OUTPUT"
+
+      # --strict：把 warning 也升级为失败（yamllint 默认只对 error 返回非 0）。
+      # --format github：同一趟输出 ::error::/::warning:: 注解，问题直接出现在 PR 界面。
+      # 两趟合并成一趟，避免「宽松一趟 + 严格一趟」的双倍耗时与两套输出。
+      - name: Run yamllint (strict)
+        if: steps.collect.outputs.count != '0'
+        run: |
+          xargs yamllint \
+            --config-file .lintrc/general/.yamllint.yml \
+            --strict \
+            --format github \
+            < /tmp/yaml-files.txt
+
+  cspell-lint:
+    name: CSpell (Spelling)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          node-version: "lts/*"
+
+      - name: Install cspell
+        run: npm install -g cspell@8.17.1
+
+      - name: Run cspell
+        run: |
+          cspell lint \
+            --config .lintrc/general/cspell.json \
+            --no-progress \
+            "**"
+
+  ls-lint:
+    name: ls-lint (File Naming)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Install ls-lint
+        run: |
+          LS_LINT_VER="2.3.1"
+          curl -sL \
+            "https://github.com/loeffel-io/ls-lint/releases/download/v${LS_LINT_VER}/ls-lint-linux-amd64" \
+            -o /tmp/ls-lint
+          sudo install -m 0755 /tmp/ls-lint /usr/local/bin/ls-lint
+
+      - name: Run ls-lint
+        run: ls-lint --config .lintrc/general/.ls-lint.yml
+
+  # ============================================================
+  # 通用文本规范 / 工作流 / schema
+  # ============================================================
+  editorconfig-lint:
+    name: EditorConfig Checker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Install editorconfig-checker
+        run: |
+          # ec 3.x 的发行包把二进制放在 bin/ 下（官方 README Quickstart 即 ./bin/ec-$OS-$ARCH）
+          EC_VER="3.0.3"
+          curl -fsSL \
+            "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v${EC_VER}/ec-linux-amd64.tar.gz" \
+            | tar xz -C /tmp
+          sudo install -m 0755 /tmp/bin/ec-linux-amd64 /usr/local/bin/ec
+
+      - name: Run editorconfig-checker
+        run: |
+          ec \
+            -ignore-defaults \
+            -exclude '(^|/)\.git/' \
+            -exclude '(^|/)conf\.d/error/' \
+            -exclude '(^|/)logs/'
+
+  github-actions-lint:
+    name: GitHub Actions Lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Install actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          sudo install -m 0755 ./actionlint /usr/local/bin/actionlint
+
+      # 用官方给的注解模板把每条问题输出成 ::error 注解，直接标在 PR 的 Files changed 上；
+      # 否则问题只躺在日志里，很容易被忽略。actionlint 没有 warning 档，任何问题都返回 1。
+      # 模板放 env 里是为了避免 YAML 单行过长（yamllint 的 line-length 上限 200）。
+      - name: Run actionlint
+        env:
+          ACTIONLINT_FORMAT: '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Message}}%0A```%0A{{replace $err.Snippet "\\n" "%0A"}}%0A```{{end}}'
+        run: actionlint -color -format "${ACTIONLINT_FORMAT}"
+
+  issue-config-lint:
+    name: Issue Chooser Config (JSON Schema)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Set up Python
+        uses: actions/setup-python@v6 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          python-version: "3.13"
+
+      - name: Install check-jsonschema
+        run: pip install check-jsonschema==0.38.0
+
+      - name: Validate issue template chooser config
+        run: |
+          check-jsonschema \
+            --schemafile .lintrc/data-formats/yaml/issue-config.schema.json \
+            .github/ISSUE_TEMPLATE/config.yml
+
+  broken-link-lint:
+    name: Broken Links (lychee)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Run lychee
+        uses: lycheeverse/lychee-action@v2 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          args: >-
+            --no-progress --verbose
+            --accept 200,206,429
+            --max-retries 3
+            --timeout 20
+            --exclude-path logs
+            --exclude-path .git
+            "**/*.md"
+          fail: true
+
+  # ============================================================
+  # 提交信息 / 安全
+  # ============================================================
+  commitlint-lint:
+    name: Commitlint (Commit Message)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          node-version: "lts/*"
+
+      - name: Install commitlint
+        run: |
+          npm install --no-save \
+            @commitlint/cli@19.6.0 \
+            @commitlint/config-conventional@19.6.0 \
+            conventional-changelog-conventionalcommits@8.0.0
+
+      - name: Lint commit messages
+        run: |
+          from="${{ github.event.pull_request.base.sha }}"
+          to="${{ github.event.pull_request.head.sha }}"
+          failed=0
+          while read -r sha; do
+            [ -z "${sha}" ] && continue
+            subject=$(git log -1 --format=%s "${sha}")
+            echo "--- ${sha} : ${subject} ---"
+            # 去掉 Windows 工具可能写入的 UTF-8 BOM，避免 header 规则误判
+            msg=$(git log -1 --format=%B "${sha}" | sed '1s/^\xEF\xBB\xBF//')
+            if ! printf '%s\n' "${msg}" \
+                | npx commitlint \
+                    --config .lintrc/git/.commitlintrc.cjs \
+                    --verbose; then
+              echo "commitlint FAILED for ${sha} : ${subject}"
+              failed=1
+            fi
+          done < <(git log --format="%H" "${from}..${to}")
+          exit ${failed}
+
+  secret-scan:
+    name: Secret Scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v3 # nosemgrep: github-actions-mutable-action-tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .lintrc/security/.gitleaks.toml
+
+  sast-scan:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Set up Python
+        uses: actions/setup-python@v6 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          python-version: "3.13"
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      # --error：只要有命中就 exit 1（semgrep 的 error_on_findings 语义：结果非空即返回 1）。
+      # 不要传 `--severity`：它筛的是「规则」而不是「命中」，语义是
+      #   "Report findings only from rules matching the supplied severity"（精确匹配）；
+      #   本仓规则一律 ERROR，传 INFO 会加载 0 条规则 —— 日志里只剩一句
+      #   "Nothing to scan."、退出码 0，扫描被静默关掉而 job 反而变绿。
+      # 也不要传 `--strict`：它把 semgrep 自身的 WARN 级问题升级为失败，与规则严格度无关。
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config .lintrc/security/.semgrep.yml \
+            --config p/github-actions \
+            --error \
+            --exclude .git/ \
+            --exclude logs/ \
+            . 2>&1 | tee /tmp/semgrep.log
+          # 空扫描守卫：规则被筛空时 semgrep 只打印 "Nothing to scan." 并以 0 退出（假绿），
+          # 所以这里断言它确实加载了规则、也确实扫到了文件。
+          if grep -q 'Nothing to scan' /tmp/semgrep.log; then
+            echo "::error::semgrep loaded no rules (Nothing to scan) - scan was vacuous"
+            exit 1
+          fi
+          if ! grep -qE 'with [1-9][0-9]* Code rules' /tmp/semgrep.log; then
+            echo "::error::semgrep reported no loaded rules - scan was vacuous"
+            exit 1
+          fi
+          echo "semgrep loaded rules and completed the scan"
+
+  # ============================================================
+  # TOML 配置
+  # ============================================================
+  toml-lint:
+    name: TOML Lint (taplo)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Collect TOML files
+        id: collect
+        run: |
+          mapfile -t FILES < <(find . -name "*.toml" \
+            ! -path "./.git/*" \
+            ! -path "./logs/*" | sort)
+          printf '%s\n' "${FILES[@]}" > /tmp/toml-files.txt
+          echo "count=${#FILES[@]}" >> "$GITHUB_OUTPUT"
+
+      - name: Install taplo
+        if: steps.collect.outputs.count != '0'
+        run: |
+          TAPLO_VER="0.9.3"
+          curl -fsSL \
+            "https://github.com/tamasfe/taplo/releases/download/${TAPLO_VER}/taplo-linux-x86_64.gz" \
+            -o /tmp/taplo.gz
+          gunzip -f /tmp/taplo.gz
+          sudo install -m 0755 /tmp/taplo /usr/local/bin/taplo
+
+      # taplo check：语法 + schema 校验；taplo fmt --check：格式必须与 taplo.toml 完全一致。
+      # 两个子命令分开跑，失败时能一眼分辨是「语法 / schema 错」还是「格式不对」。
+      - name: taplo (syntax + schema check)
+        if: steps.collect.outputs.count != '0'
+        run: |
+          xargs taplo check \
+            --config .lintrc/data-formats/toml/taplo.toml \
+            < /tmp/toml-files.txt
+
+      - name: taplo (format check)
+        if: steps.collect.outputs.count != '0'
+        run: |
+          xargs taplo fmt --check \
+            --config .lintrc/data-formats/toml/taplo.toml \
+            < /tmp/toml-files.txt
+
+  # ============================================================
+  # 严格性守卫（警告即失败）
+  # ============================================================
+  strictness-guard:
+    name: Strictness Guard (no warning downgrades)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      # 纪律：本仓库所有检查都必须「命中即失败」。各工具对低档问题（warning）的退出码语义
+      # 并不一致 —— yamllint 默认只对 error 返回非 0、semgrep 靠 --error、markdownlint 有
+      # severity 字段、commitlint 用 1 表示 warning、ls-lint 甚至有开关能把退出码压成 0。
+      # 因此这里不逐个依赖工具语义，而是在配置层把「降级」与「放行」的写法本身堵死。
+      #
+      # 自匹配处理：模式里的关键字符串用 '' 拼接（例如把开关名拆成两段 '--wa''rn' 写），
+      # 这样守卫脚本自己的文本不会被自己的 grep 命中，也不会被拼写检查当成生造的单词；
+      # grep 用 -i，把大小写变体（WARNING/warning）一并命中。
+      - name: Reject warning-level config and fail-open flags
+        run: |
+          patterns=(
+            '"severity"[[:space:]]*:[[:space:]]*"(warning|info)'
+            '^[[:space:]]*severity:[[:space:]]*(warning|info)'
+            '^[[:space:]]*level:[[:space:]]*warning'
+            '\[[[:space:]]*1[[:space:]]*,'
+            '--wa''rn'
+            '--no-''error'
+            '--exit-''code[[:space:]=]*0'
+            '--sever[it]y([[:space:]=]|$)'
+            '-''ignore[[:space:]]'
+            'continue-''on-''error'
+            '\|\|[[:space:]]*true'
+          )
+          failed=0
+          for pattern in "${patterns[@]}"; do
+            if grep -rInEi -e "${pattern}" .lintrc/ .github/workflows/; then
+              echo "::error::forbidden warning/fail-open pattern: ${pattern}"
+              failed=1
+            fi
+          done
+          if [ "${failed}" -ne 0 ]; then
+            echo "::error::strictness guard failed: warnings must fail the build"
+            exit 1
+          fi
+          echo "strictness guard: no warning downgrade or fail-open flag found"
+
+  # ============================================================
+  # 代码格式（Prettier）
+  # ============================================================
+  prettier-check:
+    name: Prettier (JS Formatting)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # nosemgrep: github-actions-mutable-action-tag
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6 # nosemgrep: github-actions-mutable-action-tag
+        with:
+          node-version: "lts/*"
+
+      - name: Install prettier
+        run: npm install --no-save prettier@3.9.9
+
+      # .lintrc/frontend/prettier/.prettierrc 此前只被 VS Code 引用，没有任何 CI job
+      # （违反仓库「一个配置一个 job」的约定）。范围先只覆盖 JS（.mjs/.cjs）：
+      # Markdown 的 proseWrap=always 与 JSON/YAML 的 printWidth 差异会让一次性格式化影响面过大，
+      # 等这一步稳定后再单独扩大范围。配置路径显式传入，不依赖 prettier 的自动发现。
+      - name: Check formatting
+        run: |
+          npx prettier \
+            --config .lintrc/frontend/prettier/.prettierrc \
+            --check "**/*.mjs" "**/*.cjs"
+
+  # ============================================================
+  # 汇总门（供分支保护作为唯一必需状态检查）
+  # ============================================================
+  all-checks:
+    name: All Lint Checks Passed
+    if: always()
+    runs-on: ubuntu-latest
+    needs:
+      - markdown-lint
+      - yaml-lint
+      - cspell-lint
+      - ls-lint
+      - editorconfig-lint
+      - github-actions-lint
+      - issue-config-lint
+      - broken-link-lint
+      - commitlint-lint
+      - secret-scan
+      - sast-scan
+      - toml-lint
+      - strictness-guard
+      - prettier-check
+    steps:
+      # 白名单式判定：只有 commitlint-lint 在非 pull_request 事件下允许 skipped
+      # （它带 `if: github.event_name == 'pull_request'`）。其余任何 failure / cancelled /
+      # skipped 都算失败 —— 旧写法把 skipped 一律视为通过，job 被误跳过时门依旧全绿。
+      - name: Verify all required jobs succeeded
+        run: |
+          failed=0
+          for pair in \
+            "markdown-lint:${{ needs.markdown-lint.result }}" \
+            "yaml-lint:${{ needs.yaml-lint.result }}" \
+            "cspell-lint:${{ needs.cspell-lint.result }}" \
+            "ls-lint:${{ needs.ls-lint.result }}" \
+            "editorconfig-lint:${{ needs.editorconfig-lint.result }}" \
+            "github-actions-lint:${{ needs.github-actions-lint.result }}" \
+            "issue-config-lint:${{ needs.issue-config-lint.result }}" \
+            "broken-link-lint:${{ needs.broken-link-lint.result }}" \
+            "commitlint-lint:${{ needs.commitlint-lint.result }}" \
+            "secret-scan:${{ needs.secret-scan.result }}" \
+            "sast-scan:${{ needs.sast-scan.result }}" \
+            "toml-lint:${{ needs.toml-lint.result }}" \
+            "strictness-guard:${{ needs.strictness-guard.result }}" \
+            "prettier-check:${{ needs.prettier-check.result }}"
+          do
+            name="${pair%%:*}"
+            result="${pair##*:}"
+            echo "${name}: ${result}"
+            if [ "${result}" = "success" ]; then
+              continue
+            fi
+            if [ "${name}" = "commitlint-lint" ] \
+              && [ "${result}" = "skipped" ] \
+              && [ "${{ github.event_name }}" != "pull_request" ]; then
+              echo "${name}: skipped on non-PR event, allowed"
+              continue
+            fi
+            echo "::error::${name} did not succeed: ${result}"
+            failed=1
+          done
+          exit "${failed}"
