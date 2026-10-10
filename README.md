@@ -65,6 +65,7 @@ conf.d/cert/<域名>/<域名>.key          # 私钥
 ```nginx
 include /etc/nginx/conf.d/sites/default-server.conf;   # 兜底：未知域名 444 / 拒握手
 include /etc/nginx/conf.d/sites/frps.conf;             # frps 管理面板（WebUI）
+include /etc/nginx/conf.d/sites/frpc.conf;             # frpc 管理面板（WebUI）
 include /etc/nginx/conf.d/sites/stream.conf;           # EMBY 视频站
 ```
 
@@ -141,7 +142,7 @@ location /error/ {
 
 ## 必须知道的几条约定
 
-- **占位符都是假的**：域名用 `example.example.example`，端口用 `127.0.0.1:7500`（frps 控制台）与 `127.0.0.1:8096`（Emby），证书用 `conf.d/cert/example/` 的自签样例。仓库里不放任何真实域名、IP、端口或凭据。
+- **占位符都是假的**：域名用 `example.example.example`，端口用 `127.0.0.1:7500`（frps 控制台）、`127.0.0.1:7400`（frpc 控制台）与 `127.0.0.1:8096`（Emby），证书用 `conf.d/cert/example/` 的自签样例。仓库里不放任何真实域名、IP、端口或凭据。
 - **绝对路径是刻意的**：`nginx.conf` 使用 `/etc/nginx/mime.types` 与 `/etc/nginx/conf.d/*.conf`，对应容器内或软件包安装的路径。
 - **注释即交付物**：每条指令都写清作用域、默认值与取值理由，不要删减或翻译这些注释。
 - **三条继承陷阱**（站点层面最容易踩，细节见配置文件注释）：
