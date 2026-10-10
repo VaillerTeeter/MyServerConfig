@@ -1,0 +1,339 @@
+# ==============================================================================
+# FRP 客户端主配置 (frpc.toml)
+# ------------------------------------------------------------------------------
+# 送达方: frpc —— 部署在内网/客户端机器上（本仓库用 docker-compose.yml 运行）。
+# 拓扑:   访客 ──HTTPS──> nginx(服务器) ──> 127.0.0.1:<映射端口> ──> frps ──隧道──> frpc ──> 本地服务
+#   frpc 主动外连服务端的 7000 端口建立隧道，把本地服务映射成服务器上的一个端口，
+#   再由服务器上的 nginx 终结 TLS 对外服务（域名证书由 nginx 管理，与本文件无关）。
+# 服务端配套: 本文件的 serverAddr/serverPort/auth.token/transport.tls 必须与服务端（frps）的配置一致；
+#   transport.tcpMux 两端必须相同；每个代理的 remotePort 必须落在 frps 的 allowPorts 内，
+#   否则 frps 会拒绝注册；udpPacketSize 两端也必须一致。
+# 约定: 本文件所有与环境相关的值都是占位符，部署前必须替换；每条指令前的中文注释写明
+#   「作用域 / 默认值 / 取值理由」，属交付内容的一部分，不要删减或翻译。
+# 热加载: frpc 支持热加载（改完本文件执行 `frpc reload -c /etc/frp/frpc.toml` 即生效），
+#   与没有热加载的 frps 不同，通常不必重启容器。
+# 官方参考: https://gofrp.org/zh-cn/docs/reference/client-configures/
+#           https://github.com/fatedier/frp/blob/dev/conf/frpc_full_example.toml
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 一、连接服务端
+# ------------------------------------------------------------------------------
+
+# 服务端地址，即 frps 所在机器对外暴露的地址。作用域: 全局 | 默认值: 空（必填）
+# 取值说明: 这里是占位值，部署时填服务器域名或 IP。
+# 注意: 单独写 IPv6 地址不需要方括号，如 serverAddr = "::"。
+serverAddr = "xxx.xxx.xxx.xxx"
+
+# 服务端监听端口。作用域: 全局 | 默认值: 7000
+# 取 7000: 必须与 frps 的 bindPort 一致；改端口要同步改服务端与防火墙。
+serverPort = 7000
+
+# 首次登录失败后是否直接退出进程。作用域: 全局 | 默认值: true
+# 取 true: 配置写错（如 token 不一致）时快速失败退出，由容器的 restart 策略暴露问题；
+# 若改成 false，frpc 会持续重试登录，配置错误反而会被静默掩盖。
+loginFailExit = true
+
+# 打洞（XTCP）所用的 STUN 服务器地址。作用域: 全局 | 默认值: "stun.easyvoip.com:3478"
+# 本仓库不使用 XTCP，故保持默认（不声明即等价于此值），在此仅作记录。
+# natHoleStunServer = "stun.easyvoip.com:3478"
+
+# 强制替换的 DNS 服务器地址。作用域: 全局 | 默认值: 空（使用系统配置的 DNS）
+# 只有系统 DNS 不可用、或解析 serverAddr 要走特定解析器时才需要，故保持注释。
+# dnsServer = ""
+
+# ------------------------------------------------------------------------------
+# 二、客户端标识、元数据与配置拆分
+# ------------------------------------------------------------------------------
+
+# 客户端用户名。作用域: 全局 | 默认值: 空
+# 取值说明: 设置后代理名会变成 {user}.{proxyName}，用于在服务端区分不同客户端的同名代理，
+# 也便于在 frps 的 Dashboard 上按客户端归类。这里是占位值，部署时换成自己的标识。
+user = "your_name"
+
+# 本 frpc 实例的唯一标识。作用域: 全局 | 默认值: 空
+# 只在服务端需要区分「同一 user 下的多个 frpc 实例」时才有意义，故保持注释（v0.68 新增）。
+# clientID = "your_client_id"
+
+# 附加元数据，会原样传给服务端插件（frps 的 httpPlugins）。作用域: 全局 | 默认值: 空
+# 注意: 它是 map，按 `metadatas.<key> = "<value>"` 逐条写，不能写成 `metadatas = map[...]`。
+# metadatas.application = "frpc"
+# metadatas.environment = "production"
+
+# 额外加载的配置文件（文件或目录，支持通配符），其中的 proxy 与 visitor 会被一并加载。
+# 作用域: 全局 | 默认值: 空
+# 用途: 代理多起来后把 [[proxies]] 拆到 ./conf.d/*.toml 里分文件管理。
+# 注意: 被包含的文件里只能写 proxy 与 visitor，通用参数必须留在主配置文件中。
+# includes = ["./conf.d/*.toml"]
+
+# 只启用指定的代理（按代理名筛选）。作用域: 全局 | 默认值: 空（全部启用）
+# 配置了很多代理、只想临时启用其中几个时使用；取值是字符串数组，不是空字符串。
+# start = ["admin-ui-tcp"]
+
+# ------------------------------------------------------------------------------
+# 三、鉴权 (auth)
+# ------------------------------------------------------------------------------
+
+# 鉴权方式: token / oidc。作用域: 全局 | 默认值: "token"
+# 取 token: 本仓库用共享 token 的简单方式；oidc 需要额外的身份提供方，未启用。
+auth.method = "token"
+
+# 除登录外，在哪些环节附带鉴权信息。可选: HeartBeats / NewWorkConns。作用域: 全局 | 默认值: 空
+# 取两者全开: 与服务端配置保持一致，让服务端在心跳与每个新建工作连接上都能逐条校验，
+# 防止有人劫持/复用已建立的隧道连接（代价是 token 传输频次略增）。
+auth.additionalScopes = ["HeartBeats", "NewWorkConns"]
+
+# 通过鉴权用的 token。作用域: 全局 | 默认值: 空
+# 取值说明: 必须与 frps 的 auth.token 完全相同，否则登录被拒。这里是与服务端配置相同的占位值，
+# 部署时必须两端一起替换成同一段随机字符串，生成方式例如
+#   openssl rand -hex 32
+#   head -c 32 /dev/urandom | base64
+# 该值等同隧道的门钥匙: 不要写进版本库、不要复用其它系统的密码。
+auth.token = "12345678"
+
+# 从文件或命令动态读取 token，与上面的 auth.token 互斥。作用域: 全局 | 默认值: 空
+# 用途: token 不落在配置文件里（由运维在运行时注入）时使用；本仓库用固定占位值，故保持注释。
+# auth.tokenSource.type = "file"
+# auth.tokenSource.file.path = "/etc/frp/token"
+
+# OIDC 鉴权，仅当 auth.method = "oidc" 时生效。作用域: 全局 | 默认值: 空
+# 需要先在身份提供方注册客户端；本仓库未启用，故保持注释。常用字段:
+#   auth.oidc.clientID / clientSecret : 客户端凭据
+#   auth.oidc.audience / scope        : 令牌的受众与权限范围
+#   auth.oidc.tokenEndpointURL        : 令牌端点地址
+#   auth.oidc.trustedCaFile           : 校验 OIDC 服务端 TLS 证书用的 CA（自签证书场景）
+#   auth.oidc.insecureSkipVerify      : 跳过证书校验（不安全，仅调试用）
+#   auth.oidc.proxyURL                : 访问令牌端点所用的代理
+#   auth.oidc.tokenSource             : 从外部来源动态获取 OIDC token（配置后其余 OIDC 字段被忽略）
+
+# ------------------------------------------------------------------------------
+# 四、网络传输层 (transport)
+# ------------------------------------------------------------------------------
+
+# 与 frps 之间的通信协议: tcp / kcp / quic / websocket / wss。作用域: 全局 | 默认值: "tcp"
+# 取 tcp: 服务端只开放了 TCP 的 7000 端口；只有 frps 打开 kcpBindPort / quicBindPort 后
+# 才能改成 kcp / quic，并需放行对应的 UDP 端口。
+transport.protocol = "tcp"
+
+# 连接服务端的超时时间，单位秒。作用域: 全局 | 默认值: 10
+# 取 10: 跟随官方默认。超出即判定本次连接失败，交由 loginFailExit 与重试逻辑接管。
+transport.dialServerTimeout = 10
+
+# 与 frps 之间底层 TCP 连接的 keepalive 间隔，单位秒，负数表示禁用。作用域: 全局 | 默认值: 7200
+# 取 7200: 与服务端的 transport.tcpKeepalive 一致。它是内核级 TCP keepalive，发现死连接很慢，
+# 隧道保活实际由下面的 tcpMuxKeepaliveInterval 负责。
+transport.dialServerKeepalive = 7200
+
+# 连接服务端时所绑定的本地 IP（多网卡场景）。作用域: 全局 | 默认值: 空（由系统选路）
+# 只有客户端有多张网卡、需要指定从哪张网卡出去时才需要，故保持注释。
+# transport.connectServerLocalIP = ""
+
+# 连接服务端所使用的代理，格式 {protocol}://user:passwd@host:port，protocol 支持 http / socks5 / ntlm。
+# 作用域: 全局 | 默认值: 空（直连）
+# 注意: 官方说明它只在 transport.protocol = "tcp" 时生效，故保持注释。
+# transport.proxyURL = ""
+
+# 预建（预热）的工作连接数。作用域: 全局 | 默认值: 0（不预热）
+# 取 5: 与服务端的 transport.maxPoolCount（默认 5）对应（服务端会为连接池设上限）；
+# 预建连接可省掉首次转发时的建连往返，代价是常驻几条空闲连接。
+transport.poolCount = 5
+
+# 是否开启 TCP 流多路复用。作用域: 全局 | 默认值: true
+# 取 true: 官方明确要求这一项「两端必须相同」，故与服务端一样保持开启；
+# 多条请求复用一条 TCP 连接，保活交给下面的 tcpMuxKeepaliveInterval。
+transport.tcpMux = true
+
+# TCP 多路复用连接的保活间隔，单位秒。作用域: 全局 | 默认值: 30
+# 取 30: 与服务端的 transport.tcpMuxKeepaliveInterval 一致（该项不要求两端相同，
+# 取同值只为便于对照）。这是本链路真正生效的保活：越小则断线发现得越快，代价是多一点心跳流量。
+transport.tcpMuxKeepaliveInterval = 30
+
+# QUIC 协议参数: 保活间隔 / 最大空闲时间 / 最大并发入向流。作用域: 全局 | 默认值: 10 / 30 / 100000
+# 本仓库用 TCP 传输，只有把 transport.protocol 改成 quic 时这几项才生效，故保持注释。
+# transport.quic.keepalivePeriod = 10
+# transport.quic.maxIdleTimeout = 30
+# transport.quic.maxIncomingStreams = 100000
+
+# 向服务端发送应用层心跳的间隔，单位秒。作用域: 全局 | 默认值: 30
+# 取 -1（禁用）: 官方建议启用 tcpMuxKeepaliveInterval 时设为 -1 —— 保活已由 mux 层负责，
+# 再叠一层应用层心跳只是多余的流量与日志。
+transport.heartbeatInterval = -1
+
+# 与服务端心跳的超时时间，单位秒。作用域: 全局 | 默认值: 90
+# 取 90: 跟随官方默认。上面的 heartbeatInterval = -1 时此项基本不参与判定，保留它只为将来启用时不必再查默认值。
+transport.heartbeatTimeout = 90
+
+# ------------------------------------------------------------------------------
+# 五、通信加密 (transport.tls)
+# ------------------------------------------------------------------------------
+
+# 是否与服务端之间启用 TLS 加密。作用域: 全局 | 默认值: true（v0.50.0 起默认开启）
+# 取 true: 服务端 transport.tls.force = true，只接受启用了 TLS 的客户端，这里显式写出
+# 以便与之一一对应。无需自备证书 —— 服务端会用随机生成的证书加密隧道，客户端默认也不校验它。
+transport.tls.enable = true
+
+# 启用 TLS 时是否不发送 0x17 特殊字节。作用域: 全局 | 默认值: true
+# 取 true（跟随默认，显式记录）: 便于穿过只认标准 TLS 的中间设备；
+# 代价是无法与 frps 的 vhostHTTPSPort 端口复用（本仓库未启用 vhost，无影响）。
+transport.tls.disableCustomTLSFirstByte = true
+
+# 客户端自身的证书 / 私钥 / 受信 CA / TLS Server 名。作用域: 全局 | 默认值: 空
+# 本仓库不配证书（用 FRP 自带的随机证书机制），故以下四行保持注释。需要「校验 frps 身份」时:
+#   trustedCaFile  : 用来校验 frps 出示的证书（配合 frps 的 certFile / keyFile）
+#   certFile/keyFile: 客户端自己的证书与私钥，用于双向校验
+#   serverName     : 校验 / SNI 使用的服务端名称（证书里的名字与 serverAddr 不一致时用）
+# 注意: 不要复用 nginx 的站点证书 —— 用途与信任链不同，证书文件权限也更敏感。
+# transport.tls.certFile = "/etc/frp/certs/client.crt"
+# transport.tls.keyFile = "/etc/frp/certs/client.key"
+# transport.tls.trustedCaFile = "/etc/frp/certs/ca.crt"
+# transport.tls.serverName = ""
+
+# ------------------------------------------------------------------------------
+# 六、日志 (log)
+# ------------------------------------------------------------------------------
+
+# 日志输出目标。"console" 打印到标准输出，其余按文件路径处理。作用域: 全局 | 默认值: "console"
+# 取 /etc/frp/log/frpc.log: 与 docker-compose.yml 里 ./logs:/etc/frp/log 的挂载对应，
+# 日志会落在宿主机磁盘上，容器重建也不丢。
+# 注意: 该文件是宿主机上的真实文件，compose 的 json-file 轮转管不到它，需自行配置 logrotate。
+log.to = "/etc/frp/log/frpc.log"
+
+# 日志级别: trace / debug / info / warn / error。作用域: 全局 | 默认值: "info"
+# 取 info: 日常够用且量可控；排障时临时改成 debug 或 trace。
+log.level = "info"
+
+# 日志文件保留天数。作用域: 全局 | 默认值: 3
+# 取 7: 与服务端保持一致，留一周便于回溯偶发问题。
+log.maxDays = 7
+
+# 日志是否使用彩色输出（仅 log.to = "console" 时才有颜色）。作用域: 全局 | 默认值: false
+# 取 false: 日志要落盘并由日志系统收集，颜色转义码只会污染文件。
+log.disablePrintColor = false
+
+# ------------------------------------------------------------------------------
+# 七、本地管理界面 (webServer)
+# ------------------------------------------------------------------------------
+# 说明: 这是 frpc 自己的 Admin UI / HTTP API（查看本客户端已注册的代理、触发 reload 等），
+# 与 frps 的 Dashboard 是两套东西，不要混淆；官方约定端口为 7400，默认只监听回环。
+
+# Admin UI 的监听地址。作用域: 全局 | 默认值: "127.0.0.1"
+# 取 127.0.0.1: 只管回环。compose 用 network_mode: host，故这是「客户端本机的回环」；
+# 外网访问不到它 —— 要走公网时经下面的 [[proxies]] 示例映射出去，而不是改这里。
+webServer.addr = "127.0.0.1"
+
+# Admin UI 的监听端口。作用域: 全局 | 默认值: 0（不设置端口则不启动 Admin UI）
+# 取 7400: 官方示例与官方镜像 (snowdreamtech/frpc) 的约定端口，且与下面代理的 localPort 对应。
+webServer.port = 7400
+
+# Admin UI 的 HTTP BasicAuth 用户名。作用域: 全局 | 默认值: 空（即不鉴权）
+# 取 admin: 官方示例用的占位值，部署时必须替换。
+webServer.user = "admin"
+
+# Admin UI 的 HTTP BasicAuth 密码。作用域: 全局 | 默认值: 空（即不鉴权）
+# 取 admin: 官方示例用的占位值，部署时必须替换。若按下面的示例把 Admin UI 经隧道映射出去，
+# 它就是唯一的一道门禁 —— 一旦对外开放，务必先换掉。
+webServer.password = "admin"
+
+# 自定义静态资源目录。作用域: 全局 | 默认值: 空（使用二进制内嵌资源）
+# 只有调试 Admin UI 前端时才需要，故保持注释。
+# webServer.assetsDir = ""
+
+# 是否在 Admin UI 端口上暴露 Go pprof 调试接口。作用域: 全局 | 默认值: false
+# 取 false: pprof 会泄露运行时细节，只在排障时临时打开。
+webServer.pprofEnable = false
+
+# Admin UI 自身的 TLS 证书 / 私钥 / 受信 CA / Server 名。作用域: 全局 | 默认值: 空
+# 本仓库不为 Admin UI 配 TLS（它只监听回环），故保持注释；确需让它跑 HTTPS 时逐条填。
+# webServer.tls.certFile = "/etc/frp/certs/admin.crt"
+# webServer.tls.keyFile = "/etc/frp/certs/admin.key"
+# webServer.tls.trustedCaFile = "/etc/frp/certs/ca.crt"
+# webServer.tls.serverName = ""
+
+# ------------------------------------------------------------------------------
+# 八、持久化存储 (store)
+# ------------------------------------------------------------------------------
+# 作用: 把运行时动态增删的代理 / 访问者配置持久化到文件，配合 webServer 用 Web UI 或 API 管理
+# （v0.68 新增）。本仓库的代理写在配置文件里、不需要运行时改动，故保持注释。
+
+# 存储文件路径，配置后即启用 Store 功能。作用域: 全局 | 默认值: 空（不启用）
+# 注意: 该路径若落在容器可写层，容器重建即丢；启用时应挂载出来持久化。
+# store.path = "/etc/frp/store/frpc.json"
+
+# ------------------------------------------------------------------------------
+# 九、UDP、特性门控与虚拟网络
+# ------------------------------------------------------------------------------
+
+# UDP 代理支持的最大包长度，单位字节。作用域: 全局 | 默认值: 1500
+# 取 1500: 与常见以太网 MTU 对齐；服务端与客户端必须一致，否则 UDP 转发会失败。
+udpPacketSize = 1500
+
+# 特性门控，用于启用 / 禁用实验性功能。作用域: 全局 | 默认值: 空
+# 注意: 它是 `map[string]bool`（不是字符串 map），按 `featureGates.<名称> = true` 逐条写；
+# 名称随版本变动，启用前请对照官方文档，故保持注释。
+# featureGates.example = true
+
+# 虚拟网络接口地址（Alpha 特性）。作用域: 全局 | 默认值: 空
+# 填成网段（如 100.86.0.1/24）后可像 VPN 一样访问对端内网资源；本仓库未启用，故保持注释。
+# virtualNet.address = ""
+
+# ------------------------------------------------------------------------------
+# 十、代理 (proxies)
+# ------------------------------------------------------------------------------
+# 作用: 每条 [[proxies]] 把一个本地服务映射到服务端 —— tcp / udp 类型映射到服务端的 remotePort，
+#   http / https 类型映射到域名（需 frps 启用 vhost），stcp / sudp / xtcp 则只对有密钥的访问方开放。
+# 三条硬约束:
+#   1) name 必须全局唯一；设置了 user 后，实际代理名是 {user}.{name}；
+#   2) tcp / udp 的 remotePort 必须落在服务端 allowPorts 放行范围内，否则 frps 拒绝注册；
+#   3) 单个客户端可注册的代理数受服务端 maxPortsPerClient 限制。
+
+# 示例: 把 frpc 自己的本地管理界面（127.0.0.1:7400）映射到服务端的 7400，
+# 供服务器上的 nginx 反代对外提供（对应服务端 allowPorts —— 需放行 7400）。
+# 注意: 这等于把本机的管理面经隧道暴露出去，务必保留 webServer.user / webServer.password。
+[[proxies]]
+# 代理名称，必须全局唯一
+name = "admin-ui-tcp"
+# 代理类型: tcp / udp / http / https / stcp / sudp / xtcp / tcpmux
+type = "tcp"
+# 本地服务 IP（相对 frpc 所在机器而言；compose 用 network_mode: host，故 127.0.0.1 即宿主机回环）
+localIP = "127.0.0.1"
+# 本地服务端口（这里指向上面的 webServer.port，即 frpc 自己的管理界面）
+localPort = 7400
+# 服务端监听端口: 必须落在 frps 的 allowPorts 内，且不与服务器上已有服务冲突
+remotePort = 7400
+
+# 再映射一个普通本地服务时的写法（本仓库未启用，故整体注释；多代理只需重复 [[proxies]] 块）:
+# [[proxies]]
+# name = "web-example"
+# type = "tcp"
+# localIP = "127.0.0.1"
+# localPort = 8080
+# remotePort = 8080
+# 说明: 代理名不可重复；若要按客户端归类，靠上面的 user（实际名会变成 {user}.web-example）。
+
+# ------------------------------------------------------------------------------
+# 十一、访问者 (visitors)
+# ------------------------------------------------------------------------------
+# 作用: 作为 stcp / sudp / xtcp 的访问方，主动连到别的 frpc 暴露的「私密代理」
+# （私密代理不在服务端监听端口，只有持相同 secretKey 的访问方能连上）。
+# 本仓库的示例代理是 tcp 类型（服务端直接监听 remotePort），故保持注释。最小骨架:
+# [[visitors]]
+# name = "secret_tcp_visitor"
+# type = "stcp"
+# serverName = "secret_tcp"   # 要访问的对端代理名
+# secretKey = "abcdefg"       # 必须与对端一致
+# bindAddr = "127.0.0.1"      # 在本机把隧道落到哪个地址
+# bindPort = 9000             # 小于 0 表示不监听端口，只接收其它访问者转来的连接
+
+# ------------------------------------------------------------------------------
+# 十二、客户端插件 (proxies.plugin)
+# ------------------------------------------------------------------------------
+# 作用: 让 frpc 自己处理连接（socks5 / http_proxy / static_file / https2http 等），
+# 此时该代理的 localIP / localPort 不再使用。本仓库未启用，启用时按下面形式追加:
+# [[proxies]]
+# name = "plugin_socks5"
+# type = "tcp"
+# remotePort = 7502
+# [proxies.plugin]
+# type = "socks5"
+# username = "abc"
+# password = "abc"
