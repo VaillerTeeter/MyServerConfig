@@ -1,0 +1,7 @@
+# macOS
+.DS_Store
+
+# 日志与 PID
+*.log
+*.pid
+
