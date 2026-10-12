@@ -11,6 +11,7 @@
 | [`MyNginx`](https://github.com/VaillerTeeter/MyServerConfig/tree/MyNginx) | Nginx 配置：多站点 HTTPS 反向代理、统一错误页、TLS 与安全响应头加固 |
 | [`MyFrps`](https://github.com/VaillerTeeter/MyServerConfig/tree/MyFrps) | frp 服务端（frps）配置 |
 | [`MyFrpc`](https://github.com/VaillerTeeter/MyServerConfig/tree/MyFrpc) | frp 客户端（frpc）配置 |
+| [`MyHomepage`](https://github.com/VaillerTeeter/MyServerConfig/tree/MyHomepage) | Homepage 仪表盘：把自用的各类网站收拢成一个导航首页 |
 
 `MyFrps` 与 `MyFrpc` 是一套拓扑的两半：服务端接收隧道并按 `allowPorts` 放行端口，客户端把内网服务映射上来；两边的 `auth.token`、端口与 TLS 设置必须配对。`MyNginx` 在最前面终结 TLS，并反向代理到映射端口。
 
