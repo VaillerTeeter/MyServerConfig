@@ -125,9 +125,11 @@ rules:
     languages: [generic]
     paths: {include: ["nginx.conf", "conf.d/*.conf", "conf.d/**/*.conf"]}
     options: {generic_comment_style: shell}
-    patterns:
-      - pattern-regex: '(?im)^\s*proxy_pass\s+https://'
-      - pattern-not-regex: '(?im)^\s*proxy_ssl_verify\s+on\s*;'
+    # 前提与缺失合写进同一条 PCRE2（与上面的 nginx-missing-hsts 同一写法），但起点必须用 \A：
+    # semgrep 编译正则时开了多行模式，^ 能命中任意行首，引擎会从「proxy_ssl_verify 那一行
+    # 之后」起步匹配成功，于是有 verify 的文件照样被判缺失（实测就报在该行之后，如 154 行）。
+    # \A 只认文件开头，负向前瞻才能扫到全文；被注释掉的行不匹配 ^\s*proxy_ssl_verify，仍算缺失。
+    pattern-regex: '(?s)\A(?=.*(?m)^\s*proxy_pass\s+https://)(?!.*(?m)^\s*proxy_ssl_verify\s+on\s*;).*'
     severity: ERROR
     message: 该文件存在 https:// 上游的 proxy_pass，却未启用 proxy_ssl_verify on（被注释也算缺失），无法防御中间人。
     metadata: {cwe: "CWE-295", technology: [nginx]}
